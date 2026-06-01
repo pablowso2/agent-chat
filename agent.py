@@ -1,9 +1,7 @@
 import os
-# ☢️ EL BOTÓN NUCLEAR: Apagado maestro de OpenTelemetry y LangSmith
-os.environ["OTEL_SDK_DISABLED"] = "true"
-os.environ["OTEL_TRACES_EXPORTER"] = "none"
-os.environ["OTEL_METRICS_EXPORTER"] = "none"
-os.environ["OTEL_LOGS_EXPORTER"] = "none"
+
+# Permitimos que OpenTelemetry funcione para WSO2 Agent Manager, 
+# pero seguimos apagando LangSmith para evitar el error 403 antiguo.
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
 os.environ["LANGCHAIN_API_KEY"] = ""
 
@@ -102,7 +100,6 @@ def buscar_musica_por_animo(animo: str, config: RunnableConfig) -> str:
             f"&scope=music:read"
             f"&state={session_id}"
         )
-        # 🔴 TRUCO: Instrucción imperativa directa para obligar al modelo a pintar la URL
         return f"INSTRUCCIÓN OBLIGATORIA: Copia y pega EXACTAMENTE este texto en tu respuesta final, no lo resumas ni cambies una sola letra:\nPor favor, inicia sesión de forma segura para autorizar el acceso a las recomendaciones musicales: <{auth_link}>"
     
     print(f"[🎵 TOOL] Agente buscando música para el clima '{animo}' utilizando el token OAuth2 del Usuario...")
@@ -154,27 +151,38 @@ def traducir_texto(texto: str, idioma_destino: str) -> str:
         return f"Error al intentar traducir: {str(e)}"
 
 
-# --- HERRAMIENTA 4: CONOCIMIENTO GENERAL (CATCH-ALL) ---
+# --- HERRAMIENTA 4: CONOCIMIENTO GENERAL (CATCH-ALL BLINDADO) ---
 @tool
-def conocimiento_general(pregunta: str) -> str:
-    """ÚSALA SIEMPRE para responder a preguntas generales. Extrae la pregunta original del usuario textualmente."""
-    print(f"\n[🧠 TOOL] Agente usando herramienta de conocimiento general para: '{pregunta}'...")
+def conocimiento_general(mensaje_literal_usuario: str) -> str:
+    """ÚSALA SIEMPRE para responder a preguntas generales o cualquier tema. El argumento 'mensaje_literal_usuario' DEBE ser exactamente la última frase del usuario, sin reescribir una sola letra."""
+    print(f"\n[🧠 TOOL] Agente usando herramienta de conocimiento general para: '{mensaje_literal_usuario}'...")
     try:
-        general_llm = ChatOpenAI(
-            base_url=f"{FASTAPI_BASE_URL.strip()}/proxy", 
-            api_key="wso2-apim-proxy", 
-            model=LOCAL_LLM_MODEL.strip() if LOCAL_LLM_MODEL else "hermes-2-pro-llama-3-8b",
-            temperature=0.7 
-        )
+        # 🔴 FIX DEFINITIVO: HTTP Crudo hacia tu Proxy. Así el APIM recibe la petición como si fuera un LLM puro.
+        url = f"{FASTAPI_BASE_URL.strip()}/proxy/chat/completions"
+        payload = {
+            "model": LOCAL_LLM_MODEL.strip() if LOCAL_LLM_MODEL else "hermes-2-pro-llama-3-8b",
+            "messages": [
+                {"role": "user", "content": mensaje_literal_usuario}
+            ],
+            "temperature": 0.7
+        }
         
-        # 🔴 FIX SEMÁNTICO: Enviamos la pregunta CRUDA para que el Guardarraíl de WSO2 la detecte
-        respuesta = general_llm.invoke(pregunta)
+        # Hacemos la llamada HTTP a nuestro propio backend, que lo enviará a WSO2 APIM
+        resp = requests.post(url, json=payload)
+        resp.raise_for_status()
+        datos = resp.json()
         
-        # 🔴 FIX ORQUESTADOR: Si el APIM nos bloquea y devuelve el escudo, forzamos la orden imperativa
-        if "🛡️" in respuesta.content:
-            return f"INSTRUCCIÓN OBLIGATORIA: Copia y pega EXACTAMENTE este texto en tu respuesta final, no lo resumas ni cambies una sola letra:\n{respuesta.content}"
+        # Extraemos el contenido o el posible bloqueo
+        if isinstance(datos, dict) and datos.get("type") == "SEMANTIC_PROMPT_GUARD":
+            return "INSTRUCCIÓN OBLIGATORIA: Copia y pega EXACTAMENTE este texto en tu respuesta final, no lo resumas ni cambies una sola letra:\n🛡️ **Bloqueo de Seguridad (WSO2 APIM):** El filtro semántico ha bloqueado esta consulta."
             
-        return respuesta.content
+        respuesta_texto = datos["choices"][0]["message"]["content"]
+        
+        # Si el interceptor de main.py ya lo disfrazó
+        if "🛡️" in respuesta_texto:
+            return f"INSTRUCCIÓN OBLIGATORIA: Copia y pega EXACTAMENTE este texto en tu respuesta final, no lo resumas ni cambies una sola letra:\n{respuesta_texto}"
+            
+        return respuesta_texto
     except Exception as e:
         print(f"\n❌ [ERROR INTERNO CONOCIMIENTO GENERAL]: {str(e)}")
         return f"Error al consultar el modelo: {str(e)}"
@@ -192,7 +200,7 @@ def create_agent():
     herramientas = [consultar_clima, buscar_musica_por_animo, traducir_texto, conocimiento_general]
     memory = MemorySaver()
 
-    # 🔴 MICRO-CIRUGÍA: Reescritura total del prompt. Modo "Dictador" activado.
+    # 🔴 MICRO-CIRUGÍA: Añadida orden estricta de no parafrasear.
     instrucciones = (
         "Eres un ORQUESTADOR ESTRICTO Y ENRUTADOR. TIENES PROHIBIDO USAR TU PROPIO CONOCIMIENTO PARA RESPONDER PREGUNTAS.\n"
         "REGLA 1: Clima -> usa 'consultar_clima'.\n"
@@ -202,7 +210,7 @@ def create_agent():
         "REGLA 5: NUNCA pidas códigos ni URLs de autorización.\n"
         "REGLA 6: Errores 403 de herramientas se muestran textualmente.\n"
         "REGLA 7: Traducción -> usa 'traducir_texto'.\n"
-        "REGLA 8 (MÁXIMA PRIORIDAD): Para ABSOLUTAMENTE CUALQUIER OTRA PREGUNTA o conversación (ej. ¿qué es el tenis?, deportes, historia, saludos, explicar conceptos, etc.), DEBES usar OBLIGATORIAMENTE la herramienta 'conocimiento_general'. Envía a la herramienta la pregunta original del usuario textualmente. NUNCA respondas directamente sin invocar esta herramienta primero."
+        "REGLA 8 (MÁXIMA PRIORIDAD): Para ABSOLUTAMENTE CUALQUIER OTRA PREGUNTA o conversación (ej. ¿qué es el tenis?, deportes, historia, saludos, explicar conceptos, etc.), DEBES usar OBLIGATORIAMENTE la herramienta 'conocimiento_general'. Tienes ESTRICTAMENTE PROHIBIDO resumir o reescribir la pregunta. Envía la frase original del usuario de forma literal y exacta."
     )
     
     agent_graph = create_react_agent(
