@@ -1,0 +1,1 @@
+amp-instrument python main.py   
