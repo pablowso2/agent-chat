@@ -315,7 +315,8 @@ def get_agent():
         "REGLA 4: Para pagar servicios -> usa 'post_servicios_pagar'.\n"
         "REGLA 5: Si el usuario dice que ya inició sesión, ejecuta el comando pendiente directamente sin pedirlo de nuevo.\n"
         "REGLA 6 (CRÍTICA): Si obtienes una 'INSTRUCCIÓN OBLIGATORIA' de una herramienta, DEBES imprimir su contenido EXACTAMENTE como se te entregó (respetando los símbolos < >), sin pensar ni modificar nada.\n"
-        "REGLA 7 (PRIORIDAD MÁXIMA): Para preguntas generales usa 'conocimiento_general'."
+        "REGLA 7: Para preguntas generales usa 'conocimiento_general'.\n"
+        "REGLA 8 (ANTI-ALUCINACIÓN MÁXIMA): TIENES ESTRICTAMENTE PROHIBIDO inventar números de cuenta, saldos, nombres o datos. Solo puedes responder usando EXACTAMENTE la información JSON que te devuelve la herramienta (por ejemplo, debes mostrar 'CTA-122', no inventar '12345'). Si la herramienta dice que no hay datos, dile al usuario la verdad."
     )
     
     return create_react_agent(llm, herramientas, checkpointer=memory, prompt=instrucciones)
