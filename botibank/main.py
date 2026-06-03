@@ -1,43 +1,155 @@
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+import os
+import requests
+import httpx
+import json
+import base64
+import warnings
+from dotenv import load_dotenv
+
+# Limpieza de consola
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=SyntaxWarning)
+
+load_dotenv()
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
-import asyncio
+
+# 🔴 IMPORTAMOS EL AGENTE DESDE agent.py
+from agent import create_agent
+
+# --- CONFIGURACIONES ---
+WSO2_TOKEN_URL = os.getenv("WSO2_TOKEN_URL")
+WSO2_CLIENT_ID = os.getenv("WSO2_CLIENT_ID")
+WSO2_CLIENT_SECRET = os.getenv("WSO2_CLIENT_SECRET")
+FASTAPI_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://127.0.0.1:5000")
 
 app = FastAPI(title="BotiBank Frontend")
 
+# Memoria de la aplicación
+TOKEN_STORE = {}
+SESSION_LOGS = []
+
+# Inicializamos el grafo del agente
+agent_graph = create_agent()
+
 # ==========================================
-# 1. DATA MODELS
+# ENDPOINTS DE FASTAPI
 # ==========================================
-class ChatRequest(BaseModel):
+class ChatRequestSchema(BaseModel):
+    session_id: str
     message: str
 
-# ==========================================
-# 2. CHAT ENDPOINT
-# ==========================================
 @app.post("/chat")
-async def chat_endpoint(req: ChatRequest):
-    await asyncio.sleep(1.2)  # Simulate BotiBank thinking
-    
-    msg = req.message.lower()
-    respuesta = ""
-    
-    if "balance" in msg or "transaction" in msg or "transactions" in msg:
-        respuesta = "Your latest transactions are synced. You have an available balance of **$1,500.50**. Would you like to make a transfer?"
-    elif "transfer" in msg or "send" in msg:
-        respuesta = "Understood! Please provide the amount and the destination account number to process the transfer immediately."
-    elif "pay" in msg or "bill" in msg or "electricity" in msg or "utility" in msg:
-        respuesta = "I have scanned your bills. You have an **Electricity (ELESUR-1234)** bill for $45.20 about to expire. Shall I proceed with the payment?"
-    else:
-        respuesta = "Hello! I am your BotiBank assistant 🤖. I am connected to the WSO2 engine. I can check your balance, transfer funds, or pay bills. What do you need?"
+def chat(payload: ChatRequestSchema):
+    config = {
+        "configurable": {
+            "thread_id": payload.session_id,
+            "session_id": payload.session_id,
+            "user_token": TOKEN_STORE.get(payload.session_id) 
+        }
+    }
+    try:
+        events = agent_graph.stream({"messages": [("user", payload.message)]}, config, stream_mode="values")
+        final_answer = None
+        for event in events:
+            if "messages" in event:
+                final_answer = event["messages"][-1].content
+        return JSONResponse(content={"response": final_answer})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent internal error: {str(e)}")
 
-    return {"response": respuesta}
+# --- WSO2 APIM PROXY ---
+async def get_apim_access_token():
+    consumer_key = os.getenv("WSO2_CONSUMER_KEY")
+    consumer_secret = os.getenv("WSO2_CONSUMER_SECRET")
+    token_url = os.getenv("WSO2_APIM_TOKEN_URL") 
+    
+    credentials = f"{consumer_key}:{consumer_secret}"
+    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+    headers = {"Authorization": f"Basic {encoded_credentials}", "Content-Type": "application/x-www-form-urlencoded"}
+    
+    async with httpx.AsyncClient(verify=False) as client:
+        response = await client.post(token_url, headers=headers, data={"grant_type": "client_credentials"})
+        if response.status_code == 200:
+            return response.json().get("access_token")
+        raise Exception(f"APIM Token Failed: {response.text}")
+
+@app.post("/proxy/chat/completions")
+async def wso2_proxy(request: Request):
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+        
+    wso2_url = os.getenv("WSO2_CHAT_URL")
+    try:
+        access_token = await get_apim_access_token()
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+        
+        print("\n🚀 PROXYING REQUEST TO WSO2 APIM...")
+        async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+            response = await client.post(wso2_url, json=payload, headers=headers)
+            resp_data = response.json()
+            
+            # Guardrail Interceptor
+            if isinstance(resp_data, dict) and resp_data.get("type") == "SEMANTIC_PROMPT_GUARD":
+                regla = resp_data.get("message", {}).get("assessments", {}).get("deniedRule", "this topic")
+                resp_data = {
+                    "choices": [{
+                        "message": {"role": "assistant", "content": f"🛡️ **Security Block (WSO2 APIM):** My corporate policies strictly prohibit discussing **'{regla}'**."}
+                    }]
+                }
+            
+            SESSION_LOGS.append({"request": payload, "response": resp_data})
+            return resp_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
+# --- WSO2 IS CALLBACK ---
+@app.get("/callback")
+def callback(code: str, state: str):
+    print(f"\n[🌐 CALLBACK] Exchanging code for session: '{state}'...")
+    try:
+        resp = requests.post(
+            WSO2_TOKEN_URL,
+            auth=(WSO2_CLIENT_ID, WSO2_CLIENT_SECRET),
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": f"{FASTAPI_BASE_URL.strip()}/callback"
+            },
+            verify=False
+        )
+        resp.raise_for_status()
+        TOKEN_STORE[state] = resp.json().get("access_token")
+        print(f"✅ [CALLBACK] Token saved for session '{state}'")
+
+        html_content = f"""
+        <html>
+            <script>
+                if (window.opener) {{
+                    window.opener.postMessage({{ type: "WSO2_AUTH_SUCCESS", sessionId: "{state}" }}, "*");
+                    window.close();
+                }}
+            </script>
+            <body style="background: #020617; color: #06b6d4; font-family: sans-serif; text-align: center; padding-top: 20%;">
+                <h2>✅ Bank Authentication Successful</h2>
+                <p>Resuming transaction...</p>
+            </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Login failed: {str(e)}")
 
 # ==========================================
-# 3. GRAPHICAL INTERFACE (LANDING PAGE + CHAT)
+# FRONTEND UI (BOTIBANK)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 def get_ui():
-    html = """
+    html = r"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -46,22 +158,11 @@ def get_ui():
         <title>BotiBank | AI-Powered Banking</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-        
         <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%233b82f6'/><path d='M30 30h40v40H30z' fill='none' stroke='white' stroke-width='8'/><circle cx='50' cy='50' r='10' fill='white'/></svg>" />
-        
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
-            
-            body { 
-                font-family: 'Space Grotesk', sans-serif; 
-                background-color: #020617; /* Slate 950 */
-                color: #f8fafc;
-                overflow-x: hidden;
-            }
-            
-            /* Mesh Gradient + Grid Tech Background */
+            body { font-family: 'Space Grotesk', sans-serif; background-color: #020617; color: #f8fafc; overflow-x: hidden; }
             .bg-tech-pattern {
-                background-color: #020617;
                 background-image: 
                     radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.25) 0px, transparent 50%),
                     radial-gradient(at 100% 100%, rgba(6, 182, 212, 0.25) 0px, transparent 50%),
@@ -69,114 +170,35 @@ def get_ui():
                     linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
                 background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
             }
-
-            tailwind.config = {
-                theme: {
-                    extend: {
-                        colors: {
-                            boti: {
-                                blue: '#3b82f6',
-                                cyan: '#06b6d4',
-                                dark: '#0f172a',
-                                panel: '#1e293b'
-                            }
-                        }
-                    }
-                }
-            }
-            
-            /* Typing Animation */
-            .typing-indicator span {
-                display: inline-block; width: 6px; height: 6px;
-                background-color: #94a3b8; border-radius: 50%;
-                animation: typing 1.4s infinite ease-in-out both; margin-right: 3px;
-            }
+            tailwind.config = { theme: { extend: { colors: { boti: { blue: '#3b82f6', cyan: '#06b6d4', dark: '#0f172a', panel: '#1e293b' } } } } }
+            .typing-indicator span { display: inline-block; width: 6px; height: 6px; background-color: #94a3b8; border-radius: 50%; animation: typing 1.4s infinite ease-in-out both; margin-right: 3px; }
             .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
             .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
-            @keyframes typing {
-                0%, 80%, 100% { transform: scale(0); opacity: 0.4; }
-                40% { transform: scale(1); opacity: 1; }
-            }
-
+            @keyframes typing { 0%, 80%, 100% { transform: scale(0); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
             #chat-box::-webkit-scrollbar { width: 4px; }
             #chat-box::-webkit-scrollbar-track { background: transparent; }
             #chat-box::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
         </style>
     </head>
     <body class="antialiased bg-tech-pattern min-h-screen">
-
         <nav class="fixed w-full z-40 top-0 bg-boti-dark/70 backdrop-blur-xl border-b border-white/10">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between items-center h-20">
                     <div class="flex items-center gap-3">
-                        <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 shadow-lg shadow-blue-500/20 rounded-xl">
-                            <rect width="512" height="512" rx="128" fill="url(#boti-grad)"/>
-                            <path d="M160 160h110c45 0 75 25 75 60 0 25-15 45-35 55 25 10 50 35 50 70 0 45-40 75-95 75H160V160z" fill="white"/>
-                            <circle cx="230" cy="220" r="18" fill="#0f172a"/>
-                            <circle cx="230" cy="345" r="18" fill="#0f172a"/>
-                            <rect x="230" y="275" width="40" height="10" rx="5" fill="#0f172a"/>
-                            <defs>
-                                <linearGradient id="boti-grad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-                                    <stop stop-color="#3b82f6"/>
-                                    <stop offset="1" stop-color="#06b6d4"/>
-                                </linearGradient>
-                            </defs>
+                        <svg viewBox="0 0 512 512" fill="none" class="w-10 h-10 shadow-lg shadow-blue-500/20 rounded-xl">
+                            <rect width="512" height="512" rx="128" fill="url(#boti-grad)"/><path d="M160 160h110c45 0 75 25 75 60 0 25-15 45-35 55 25 10 50 35 50 70 0 45-40 75-95 75H160V160z" fill="white"/>
+                            <circle cx="230" cy="220" r="18" fill="#0f172a"/><circle cx="230" cy="345" r="18" fill="#0f172a"/><rect x="230" y="275" width="40" height="10" rx="5" fill="#0f172a"/>
+                            <defs><linearGradient id="boti-grad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs>
                         </svg>
                         <h1 class="text-2xl font-bold tracking-tight text-white">Boti<span class="text-boti-cyan">Bank</span></h1>
-                    </div>
-                    <div class="hidden md:flex space-x-8 items-center">
-                        <a href="#" class="text-gray-400 hover:text-white transition-colors font-medium text-sm">Accounts</a>
-                        <a href="#" class="text-gray-400 hover:text-white transition-colors font-medium text-sm">Cards</a>
-                        <a href="#" class="text-gray-400 hover:text-white transition-colors font-medium text-sm">WSO2 API</a>
                     </div>
                 </div>
             </div>
         </nav>
 
-        <div class="relative pt-40 pb-20 sm:pt-48 sm:pb-32 overflow-hidden">
-            <div class="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-900/30 border border-blue-500/30 text-boti-cyan text-xs font-semibold uppercase tracking-wider mb-8">
-                    <span class="relative flex h-2 w-2">
-                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
-                    </span>
-                    AI Agent Online
-                </div>
-                <h1 class="text-5xl sm:text-7xl font-bold tracking-tight mb-8 leading-tight">
-                    The future of banking <br>
-                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-boti-blue to-boti-cyan">
-                        is now conversational.
-                    </span>
-                </h1>
-                <p class="mt-4 text-lg text-gray-400 max-w-2xl mx-auto mb-10">
-                    BotiBank uses advanced artificial intelligence to process your transfers, payments, and inquiries through a secure integrated chat.
-                </p>
-                <div class="flex justify-center gap-4">
-                    <button class="bg-white text-slate-900 px-8 py-3.5 rounded-full font-bold hover:bg-gray-100 transition-colors shadow-xl flex items-center gap-2">
-                        <i class="fa-solid fa-bolt text-yellow-500"></i> Open a Zero Account
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-32">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="bg-boti-dark/50 backdrop-blur-sm p-8 rounded-3xl border border-white/10 hover:border-boti-blue/50 transition-colors">
-                    <i class="fa-solid fa-microchip text-3xl text-boti-blue mb-4"></i>
-                    <h3 class="text-lg font-bold mb-2">AI Engine</h3>
-                    <p class="text-gray-400 text-sm">Connected to next-gen LLMs to perfectly understand your natural language.</p>
-                </div>
-                <div class="bg-boti-dark/50 backdrop-blur-sm p-8 rounded-3xl border border-white/10 hover:border-boti-cyan/50 transition-colors">
-                    <i class="fa-solid fa-money-bill-transfer text-3xl text-boti-cyan mb-4"></i>
-                    <h3 class="text-lg font-bold mb-2">Ballerina Backend</h3>
-                    <p class="text-gray-400 text-sm">Ultra-fast and secure transactions processed by our Ballerina architecture.</p>
-                </div>
-                <div class="bg-boti-dark/50 backdrop-blur-sm p-8 rounded-3xl border border-white/10 hover:border-blue-400/50 transition-colors">
-                    <i class="fa-solid fa-shield-halved text-3xl text-blue-400 mb-4"></i>
-                    <h3 class="text-lg font-bold mb-2">WSO2 Security</h3>
-                    <p class="text-gray-400 text-sm">Federated identity and access control managed by WSO2 Identity Server.</p>
-                </div>
-            </div>
+        <div class="relative pt-40 pb-20 sm:pt-48 sm:pb-32 text-center">
+            <h1 class="text-5xl sm:text-7xl font-bold tracking-tight mb-8">The future of banking <br><span class="text-transparent bg-clip-text bg-gradient-to-r from-boti-blue to-boti-cyan">is now conversational.</span></h1>
+            <button class="bg-white text-slate-900 px-8 py-3.5 rounded-full font-bold shadow-xl mx-auto flex items-center gap-2"><i class="fa-solid fa-bolt text-yellow-500"></i> Open a Zero Account</button>
         </div>
 
         <button id="chat-toggle" onclick="toggleChat()" class="fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-r from-boti-blue to-boti-cyan rounded-full shadow-[0_0_20px_rgba(6,182,212,0.4)] flex items-center justify-center text-white text-2xl hover:scale-110 transition-transform z-50">
@@ -187,34 +209,23 @@ def get_ui():
             
             <div class="bg-boti-dark p-5 border-b border-white/10 flex justify-between items-center">
                 <div class="flex items-center gap-3">
-                    <div class="w-12 h-12 bg-gradient-to-br from-boti-blue to-boti-cyan rounded-xl flex items-center justify-center text-white">
-                        <i class="fa-solid fa-bolt text-xl"></i>
-                    </div>
-                    <div>
-                        <h3 class="font-bold text-white text-base">BotiBank AI</h3>
-                        <p class="text-xs text-gray-400 flex items-center gap-1">Your virtual executive</p>
-                    </div>
+                    <div class="w-12 h-12 bg-gradient-to-br from-boti-blue to-boti-cyan rounded-xl flex items-center justify-center text-white"><i class="fa-solid fa-bolt text-xl"></i></div>
+                    <div><h3 class="font-bold text-white text-base">BotiBank AI</h3><p class="text-xs text-gray-400">Powered by LangChain & WSO2</p></div>
                 </div>
-                <button onclick="toggleChat()" class="text-gray-400 hover:text-white transition-colors w-10 h-10 flex justify-center items-center rounded-full hover:bg-white/10">
-                    <i class="fa-solid fa-chevron-down text-lg"></i>
-                </button>
+                <button onclick="toggleChat()" class="text-gray-400 hover:text-white transition-colors w-10 h-10 rounded-full hover:bg-white/10"><i class="fa-solid fa-chevron-down text-lg"></i></button>
             </div>
 
             <div id="chat-box" class="flex-1 p-5 overflow-y-auto flex flex-col gap-5 bg-[#0f172a]/40">
                 <div class="flex gap-3 max-w-[90%]">
-                    <div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1 shadow-md shadow-blue-500/20">
-                        <i class="fa-solid fa-robot text-white text-sm"></i>
-                    </div>
-                    <div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none text-sm text-gray-200">
-                        Hello! Welcome to BotiBank. My neural system is ready to manage your finances. What would you like to do today?
-                    </div>
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 shadow-md"><i class="fa-solid fa-robot text-white text-sm"></i></div>
+                    <div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none text-sm text-gray-200">Hello! I am ready to manage your finances. Try typing: <b>"Transfer $50 to CTA-999"</b> or <b>"Pay my mortgage HIP-001"</b></div>
                 </div>
             </div>
 
             <div class="p-5 bg-boti-dark border-t border-white/10">
                 <div class="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide">
-                    <button onclick="sendSuggestion('View balance')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-white/5 border border-white/10 hover:bg-boti-blue/20 hover:text-boti-cyan hover:border-boti-blue/50 rounded-lg transition-colors">
-                        <i class="fa-solid fa-wallet mr-1"></i> Balance
+                    <button onclick="sendSuggestion('View my mortgage balance for HIP-001')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-white/5 border border-white/10 hover:bg-boti-blue/20 hover:text-boti-cyan hover:border-boti-blue/50 rounded-lg transition-colors">
+                        <i class="fa-solid fa-house mr-1"></i> Mortgage
                     </button>
                     <button onclick="sendSuggestion('Transfer money')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-white/5 border border-white/10 hover:bg-boti-blue/20 hover:text-boti-cyan hover:border-boti-blue/50 rounded-lg transition-colors">
                         <i class="fa-solid fa-money-bill-transfer mr-1"></i> Transfer
@@ -222,17 +233,14 @@ def get_ui():
                 </div>
                 
                 <div class="relative flex items-center">
-                <input id="user-input" type="text" placeholder="Type a command..." 
-                    class="w-full bg-white border border-gray-300 focus:border-boti-blue focus:ring-2 focus:ring-boti-blue/20 rounded-xl pl-4 pr-12 py-4 text-sm text-black placeholder-gray-400 focus:outline-none transition-all shadow-inner"
-                    onkeypress="if(event.key === 'Enter') sendMessage()">
-                    <button onclick="sendMessage()" class="absolute right-2 top-2 bottom-2 aspect-square bg-boti-blue hover:bg-blue-400 text-white rounded-lg flex items-center justify-center transition-colors">
-                        <i class="fa-solid fa-paper-plane text-sm"></i>
-                    </button>
+                    <input id="user-input" type="text" placeholder="Type a command..." class="w-full bg-white border border-gray-300 focus:border-boti-blue focus:ring-2 focus:ring-boti-blue/20 rounded-xl pl-4 pr-12 py-4 text-sm text-black placeholder-gray-400 focus:outline-none transition-all shadow-inner" onkeypress="if(event.key === 'Enter') sendMessage()">
+                    <button onclick="sendMessage()" class="absolute right-2 top-2 bottom-2 aspect-square bg-boti-blue hover:bg-blue-400 text-white rounded-lg flex items-center justify-center"><i class="fa-solid fa-paper-plane text-sm"></i></button>
                 </div>
             </div>
         </div>
 
         <script>
+            const sessionId = "session-" + Math.random().toString(36).substr(2, 9);
             const chatPanel = document.getElementById("chat-panel");
             const chatToggleBtn = document.getElementById("chat-toggle");
             const chatBox = document.getElementById("chat-box");
@@ -253,31 +261,32 @@ def get_ui():
                 }
             }
 
-            function sendSuggestion(text) {
-                userInput.value = text;
-                sendMessage();
-            }
+            function sendSuggestion(text) { userInput.value = text; sendMessage(); }
 
             function appendMessage(text, isUser) {
                 const msgDiv = document.createElement("div");
                 msgDiv.className = `flex gap-3 max-w-[90%] ${isUser ? 'ml-auto flex-row-reverse' : ''}`;
                 
+                let formattedText = text;
+                const urlRegex = /<(https?:\/\/[^>]+)>/g;
+                
+                if (urlRegex.test(text)) {
+                    formattedText = text.replace(urlRegex, function(match, url) {
+                        if (url.includes("oauth2/authorize")) {
+                            return `<div class="mt-4 mb-2"><a href="${url}" target="_blank" rel="opener" class="inline-flex items-center gap-2 bg-gradient-to-r from-boti-blue to-boti-cyan hover:opacity-90 text-white font-semibold py-2.5 px-5 rounded-xl shadow-lg transition-all"><i class="fa-solid fa-shield-halved"></i> Secure Bank Login</a></div>`;
+                        } else {
+                            return `<a href="${url}" target="_blank" class="text-boti-cyan underline">${url}</a>`;
+                        }
+                    });
+                }
+                formattedText = formattedText.replace(/\\*\\*(.*?)\\*\\*/g, "<b>$1</b>");
+
                 const avatar = isUser
                     ? `<div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 mt-1"><i class="fa-solid fa-user text-white text-sm"></i></div>`
                     : `<div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1 shadow-md shadow-blue-500/20"><i class="fa-solid fa-robot text-white text-sm"></i></div>`;
+                const bubbleClass = isUser ? `bg-boti-blue text-white rounded-2xl rounded-tr-none font-medium` : `bg-boti-dark border border-white/5 text-gray-200 rounded-2xl rounded-tl-none`;
 
-                const bubbleClass = isUser 
-                    ? `bg-boti-blue text-white rounded-2xl rounded-tr-none font-medium shadow-md shadow-blue-500/20`
-                    : `bg-boti-dark border border-white/5 text-gray-200 rounded-2xl rounded-tl-none`;
-
-                const formattedText = text.replace(/\\*\\*(.*?)\\*\\*/g, "<b>$1</b>");
-
-                msgDiv.innerHTML = `
-                    ${avatar}
-                    <div class="p-4 text-sm ${bubbleClass}">
-                        ${formattedText}
-                    </div>
-                `;
+                msgDiv.innerHTML = `${avatar}<div class="p-4 text-sm ${bubbleClass} leading-relaxed">${formattedText}</div>`;
                 chatBox.appendChild(msgDiv);
                 chatBox.scrollTop = chatBox.scrollHeight;
             }
@@ -287,12 +296,7 @@ def get_ui():
                 const msgDiv = document.createElement("div");
                 msgDiv.id = typingId;
                 msgDiv.className = `flex gap-3 max-w-[90%]`;
-                msgDiv.innerHTML = `
-                    <div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1"><i class="fa-solid fa-robot text-white text-sm"></i></div>
-                    <div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none flex items-center">
-                        <div class="typing-indicator"><span></span><span></span><span></span></div>
-                    </div>
-                `;
+                msgDiv.innerHTML = `<div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1"><i class="fa-solid fa-robot text-white text-sm"></i></div><div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none flex items-center"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                 chatBox.appendChild(msgDiv);
                 chatBox.scrollTop = chatBox.scrollHeight;
                 return typingId;
@@ -303,6 +307,29 @@ def get_ui():
                 if(el) el.remove();
             }
 
+            window.addEventListener("message", async function(event) {
+                if (event.data && event.data.type === "WSO2_AUTH_SUCCESS" && event.data.sessionId === sessionId) {
+                    const alertDiv = document.createElement("div");
+                    alertDiv.className = "flex justify-center my-4 w-full";
+                    alertDiv.innerHTML = `<div class="bg-boti-blue/20 border border-boti-blue/50 px-4 py-2 rounded-full text-xs text-boti-cyan font-medium shadow-lg backdrop-blur-sm"><i class="fa-solid fa-shield-check"></i> Identity Verified. Resuming operation...</div>`;
+                    chatBox.appendChild(alertDiv);
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                    
+                    const typingId = showTyping();
+                    try {
+                        const response = await fetch("/chat", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ session_id: sessionId, message: "I have securely logged in. Please execute the pending transaction." })
+                        });
+                        const data = await response.json();
+                        hideTyping(typingId);
+                        appendMessage(data.response, false);
+                    } catch (error) {
+                        hideTyping(typingId);
+                    }
+                }
+            });
+
             async function sendMessage() {
                 const text = userInput.value.trim();
                 if (!text) return;
@@ -312,17 +339,16 @@ def get_ui():
                 const typingId = showTyping();
 
                 try {
-                    const res = await fetch("/api/chat", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ message: text })
+                    const res = await fetch("/chat", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ session_id: sessionId, message: text })
                     });
                     const data = await res.json();
                     hideTyping(typingId);
                     appendMessage(data.response, false);
                 } catch (error) {
                     hideTyping(typingId);
-                    appendMessage("⚠️ BotiBank systems offline. Please try again later.", false);
+                    appendMessage("⚠️ BotiBank systems offline.", false);
                 }
             }
         </script>

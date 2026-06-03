@@ -6,15 +6,37 @@ import ballerina/uuid;
 // ==========================================
 // 1. DEFINICIÓN DE TIPOS (RECORDS)
 // ==========================================
-type Cliente record {| string id; string nombre; string apellido; |};
+type Cliente record {|
+    string id; string nombre; string apellido; |};
 type Cuenta record {| string cuentaId; string clienteId; decimal saldo; |};
 type CuentaRequest record {| string cuentaId; string clienteId; |};
-type Movimiento record {| string id; string fecha; string tipo; decimal monto; string descripcion; string cuentaId; |};
+type Movimiento record {| string id; string fecha; string tipo;
+    decimal monto; string descripcion; string cuentaId; |};
 type Servicio record {| string codigoServicio; string nombre; decimal monto; string vencimiento; |};
 type MontoRequest record {| decimal monto; |};
 type TransferenciaRequest record {| string cuentaDestino; decimal monto; string concepto; |};
 type PagoServicioRequest record {| string cuentaOrigen; string codigoServicio; decimal monto; |};
 
+// Tipos para Hipotecas
+type Hipoteca record {| 
+    string id;
+    string clienteId; 
+    decimal montoTotal; 
+    decimal balancePendiente; 
+    string vencimiento; 
+    decimal pagoParcial; 
+|};
+type CrearHipotecaRequest record {| 
+    string id; 
+    string clienteId;
+    decimal monto; 
+    string vencimiento; 
+    decimal pagoParcial; 
+|};
+type PagoHipotecaRequest record {| 
+    string cuentaOrigen; 
+    decimal monto; 
+|};
 // ==========================================
 // 2. SISTEMA DE PERSISTENCIA (db.data)
 // ==========================================
@@ -23,6 +45,7 @@ type Database record {|
     Cuenta[] cuentas = [];
     Movimiento[] movimientos = [];
     Servicio[] servicios = [];
+    Hipoteca[] hipotecas = [];
 |};
 
 Database db = {};
@@ -50,7 +73,6 @@ function saveDb() returns error? {
 // 3. SERVICIO REST API
 // ==========================================
 configurable int port = 8000;
-
 service /api/v1 on new http:Listener(port) {
 
     // ----------------------------------------
@@ -70,7 +92,6 @@ service /api/v1 on new http:Listener(port) {
         db.clientes.push(cliente);
         check saveDb();
         io:println("📤 [RESPONSE] 201 Created");
-        // 🔴 FIX: Ahora devolvemos el cliente creado en el body
         return <http:Created> { body: cliente };
     }
 
@@ -91,6 +112,14 @@ service /api/v1 on new http:Listener(port) {
     // ----------------------------------------
     // CUENTAS
     // ----------------------------------------
+    resource function get cuentas(string clienteId) returns Cuenta[] {
+        io:println("\n========================================");
+        io:println("📥 [REQUEST] GET /cuentas?clienteId=", clienteId);
+        Cuenta[] filtradas = db.cuentas.filter(c => c.clienteId == clienteId);
+        io:println("📤 [RESPONSE] 200 OK | Body: ", filtradas);
+        return filtradas;
+    }
+
     resource function post cuentas(@http:Payload CuentaRequest req) returns http:Created|error {
         io:println("\n========================================");
         io:println("📥 [REQUEST] POST /cuentas | Payload: ", req);
@@ -170,19 +199,21 @@ service /api/v1 on new http:Listener(port) {
         io:println("📥 [REQUEST] POST /cuentas/", cuentaId, "/transferir | Payload: ", req);
         Cuenta? origen = ();
         Cuenta? destino = ();
-
         foreach var c in db.cuentas {
-            if c.cuentaId == cuentaId { origen = c; }
-            if c.cuentaId == req.cuentaDestino { destino = c; }
+            if c.cuentaId == cuentaId { origen = c;
+            }
+            if c.cuentaId == req.cuentaDestino { destino = c;
+            }
         }
 
-        if origen is () || destino is () { 
+        if origen is () ||
+        destino is () { 
             io:println("📤 [RESPONSE] 404 Not Found | Cuentas no encontradas");
-            return <http:NotFound> { body: { "error": "Cuenta de origen o destino no encontrada" } }; 
+            return <http:NotFound> { body: { "error": "Cuenta de origen o destino no encontrada" } };
         }
         if origen.saldo < req.monto { 
             io:println("📤 [RESPONSE] 400 Bad Request | Saldo insuficiente");
-            return <http:BadRequest> { body: { "error": "Saldo insuficiente para transferir" } }; 
+            return <http:BadRequest> { body: { "error": "Saldo insuficiente para transferir" } };
         }
 
         origen.saldo -= req.monto;
@@ -239,12 +270,12 @@ service /api/v1 on new http:Listener(port) {
         Servicio[] srv = db.servicios.filter(s => s.codigoServicio == req.codigoServicio);
         if srv.length() == 0 { 
             io:println("📤 [RESPONSE] 404 Not Found | Servicio no encontrado");
-            return <http:NotFound> { body: { "error": "Servicio no encontrado" } }; 
+            return <http:NotFound> { body: { "error": "Servicio no encontrado" } };
         }
         
         if srv[0].monto != req.monto { 
             io:println("📤 [RESPONSE] 400 Bad Request | Monto incorrecto");
-            return <http:BadRequest> { body: { "error": "El monto enviado no coincide con el valor de la factura" } }; 
+            return <http:BadRequest> { body: { "error": "El monto enviado no coincide con el valor de la factura" } };
         }
 
         foreach var cuenta in db.cuentas {
@@ -267,12 +298,92 @@ service /api/v1 on new http:Listener(port) {
         io:println("📤 [RESPONSE] 404 Not Found | Cuenta no encontrada");
         return <http:NotFound> { body: { "error": "Cuenta de origen no encontrada" } };
     }
+
+    // ----------------------------------------
+    // HIPOTECAS
+    // ----------------------------------------
+    resource function post hipotecas(@http:Payload CrearHipotecaRequest req) returns http:Created|error {
+        io:println("\n========================================");
+        io:println("📥 [REQUEST] POST /hipotecas | Payload: ", req);
+        
+        Hipoteca nuevaHipoteca = {
+            id: req.id,
+            clienteId: req.clienteId,
+            montoTotal: req.monto,
+            balancePendiente: req.monto, // Inicialmente se debe todo
+            vencimiento: req.vencimiento,
+            pagoParcial: req.pagoParcial
+      
+        };
+        db.hipotecas.push(nuevaHipoteca);
+        check saveDb();
+        
+        io:println("📤 [RESPONSE] 201 Created");
+        return <http:Created> { body: nuevaHipoteca };
+    }
+
+    resource function get hipotecas(string clienteId) returns Hipoteca[] {
+        io:println("\n========================================");
+        io:println("📥 [REQUEST] GET /hipotecas?clienteId=", clienteId);
+        Hipoteca[] filtradas = db.hipotecas.filter(h => h.clienteId == clienteId);
+        io:println("📤 [RESPONSE] 200 OK | Body: ", filtradas);
+        return filtradas;
+    }
+
+    resource function get hipotecas/[string idHipoteca]() returns Hipoteca|http:NotFound {
+        io:println("\n========================================");
+        io:println("📥 [REQUEST] GET /hipotecas/", idHipoteca);
+        Hipoteca[] filtradas = db.hipotecas.filter(h => h.id == idHipoteca);
+        if filtradas.length() > 0 {
+            io:println("📤 [RESPONSE] 200 OK | Body: ", filtradas[0]);
+            return filtradas[0];
+        }
+        io:println("📤 [RESPONSE] 404 Not Found");
+        return <http:NotFound> { body: { "error": "Hipoteca no encontrada" } };
+    }
+
+    resource function post hipotecas/[string idHipoteca]/pagar(@http:Payload PagoHipotecaRequest req) returns http:Ok|http:BadRequest|http:NotFound|error {
+        io:println("\n========================================");
+        io:println("📥 [REQUEST] POST /hipotecas/", idHipoteca, "/pagar | Payload: ", req);
+        
+        Hipoteca[] filtradas = db.hipotecas.filter(h => h.id == idHipoteca);
+        if filtradas.length() == 0 {
+            io:println("📤 [RESPONSE] 404 Not Found | Hipoteca no encontrada");
+            return <http:NotFound> { body: { "error": "Hipoteca no encontrada" } };
+        }
+        Hipoteca hipoteca = filtradas[0];
+        // Validamos y restamos de la cuenta origen del cliente
+        foreach var cuenta in db.cuentas {
+            if cuenta.cuentaId == req.cuentaOrigen {
+                if cuenta.saldo < req.monto {
+                    io:println("📤 [RESPONSE] 400 Bad Request | Saldo insuficiente");
+                    return <http:BadRequest> { body: { "error": "Saldo insuficiente en la cuenta para pagar la hipoteca" } };
+                }
+                
+                // Ejecutamos el pago
+                cuenta.saldo -= req.monto;
+                hipoteca.balancePendiente -= req.monto;
+                
+                check registrarMovimiento(req.cuentaOrigen, "PAGO_HIPOTECA", req.monto, "Pago de cuota para hipoteca: " + hipoteca.id);
+                check saveDb();
+                io:println("📤 [RESPONSE] 200 OK | Pago procesado");
+                return <http:Ok> { body: { 
+                    "mensaje": "Pago de hipoteca procesado con éxito", 
+                    "balanceRestanteHipoteca": hipoteca.balancePendiente,
+                    "saldoRestanteCuenta": cuenta.saldo
+                } };
+            }
+        }
+        io:println("📤 [RESPONSE] 404 Not Found | Cuenta no encontrada");
+        return <http:NotFound> { body: { "error": "Cuenta de origen no encontrada" } };
+    }
 }
 
 // ==========================================
 // 4. FUNCIONES AUXILIARES
 // ==========================================
-function registrarMovimiento(string cuentaId, string tipo, decimal monto, string descripcion) returns error? {
+function registrarMovimiento(string cuentaId, string tipo, decimal monto, string descripcion) returns error?
+{
     Movimiento mov = {
         id: uuid:createType1AsString(),
         fecha: time:utcToString(time:utcNow()),
