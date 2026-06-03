@@ -1,10 +1,9 @@
 import os
-import requests
-import httpx
 import json
 import base64
 import warnings
 from dotenv import load_dotenv
+import traceback
 
 # Limpieza de consola
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -15,15 +14,21 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
+import httpx
+import requests
 
 # 🔴 IMPORTAMOS EL AGENTE DESDE agent.py
-from agent import create_agent
+from agent import get_agent
 
 # --- CONFIGURACIONES ---
-WSO2_TOKEN_URL = os.getenv("WSO2_TOKEN_URL")
-WSO2_CLIENT_ID = os.getenv("WSO2_CLIENT_ID")
-WSO2_CLIENT_SECRET = os.getenv("WSO2_CLIENT_SECRET")
+WSO2_TOKEN_URL = os.getenv("WSO2_TOKEN_URL", "")
+IDENTITY_SERVER_BASE_URL = WSO2_TOKEN_URL.replace("/oauth2/token", "") if WSO2_TOKEN_URL else "https://127.0.0.1:9446"
+
+WSO2_CLIENT_ID = os.getenv("WSO2_CLIENT_ID", "")
+WSO2_CLIENT_SECRET = os.getenv("WSO2_CLIENT_SECRET", "")
 FASTAPI_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://127.0.0.1:5000")
+# 🔴 Forzamos el puerto 5000 para evitar el invalid_callback
+REDIRECT_URI = "http://127.0.0.1:5000/callback"
 
 app = FastAPI(title="BotiBank Frontend")
 
@@ -32,7 +37,7 @@ TOKEN_STORE = {}
 SESSION_LOGS = []
 
 # Inicializamos el grafo del agente
-agent_graph = create_agent()
+agent_graph = get_agent()
 
 # ==========================================
 # ENDPOINTS DE FASTAPI
@@ -42,7 +47,7 @@ class ChatRequestSchema(BaseModel):
     message: str
 
 @app.post("/chat")
-def chat(payload: ChatRequestSchema):
+async def chat(payload: ChatRequestSchema):
     config = {
         "configurable": {
             "thread_id": payload.session_id,
@@ -51,20 +56,19 @@ def chat(payload: ChatRequestSchema):
         }
     }
     try:
-        events = agent_graph.stream({"messages": [("user", payload.message)]}, config, stream_mode="values")
-        final_answer = None
-        for event in events:
-            if "messages" in event:
-                final_answer = event["messages"][-1].content
+        result = await agent_graph.ainvoke({"messages": [("user", payload.message)]}, config)
+        final_answer = result["messages"][-1].content
         return JSONResponse(content={"response": final_answer})
     except Exception as e:
+        print("\n❌ DETALLE DEL ERROR 500:")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Agent internal error: {str(e)}")
 
 # --- WSO2 APIM PROXY ---
 async def get_apim_access_token():
     consumer_key = os.getenv("WSO2_CONSUMER_KEY")
     consumer_secret = os.getenv("WSO2_CONSUMER_SECRET")
-    token_url = os.getenv("WSO2_APIM_TOKEN_URL") 
+    token_url = os.getenv("WSO2_APIM_TOKEN_URL", f"{IDENTITY_SERVER_BASE_URL}/oauth2/token") 
     
     credentials = f"{consumer_key}:{consumer_secret}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
@@ -83,17 +87,15 @@ async def wso2_proxy(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
         
-    wso2_url = os.getenv("WSO2_CHAT_URL")
+    wso2_url = os.getenv("WSO2_CHAT_URL", "https://localhost:8243/openaiapi/2.3.0/chat/completions")
     try:
         access_token = await get_apim_access_token()
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}", "Accept": "application/json"}
         
-        print("\n🚀 PROXYING REQUEST TO WSO2 APIM...")
         async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
             response = await client.post(wso2_url, json=payload, headers=headers)
             resp_data = response.json()
             
-            # Guardrail Interceptor
             if isinstance(resp_data, dict) and resp_data.get("type") == "SEMANTIC_PROMPT_GUARD":
                 regla = resp_data.get("message", {}).get("assessments", {}).get("deniedRule", "this topic")
                 resp_data = {
@@ -110,7 +112,7 @@ async def wso2_proxy(request: Request):
 # --- WSO2 IS CALLBACK ---
 @app.get("/callback")
 def callback(code: str, state: str):
-    print(f"\n[🌐 CALLBACK] Exchanging code for session: '{state}'...")
+    print(f"\n[🌐 CALLBACK] Intercambiando código OAuth2 para la sesión: '{state}'...")
     try:
         resp = requests.post(
             WSO2_TOKEN_URL,
@@ -118,13 +120,17 @@ def callback(code: str, state: str):
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": f"{FASTAPI_BASE_URL.strip()}/callback"
+                "redirect_uri": REDIRECT_URI  # 🔴 Hardcodeado al puerto 5000
             },
             verify=False
         )
+        
+        if resp.status_code != 200:
+            print(f"❌ [WSO2 RECHAZÓ EL TOKEN]: {resp.text}")
+            
         resp.raise_for_status()
         TOKEN_STORE[state] = resp.json().get("access_token")
-        print(f"✅ [CALLBACK] Token saved for session '{state}'")
+        print(f"✅ [CALLBACK] Token guardado exitosamente para '{state}'")
 
         html_content = f"""
         <html>
@@ -135,15 +141,15 @@ def callback(code: str, state: str):
                 }}
             </script>
             <body style="background: #020617; color: #06b6d4; font-family: sans-serif; text-align: center; padding-top: 20%;">
-                <h2>✅ Bank Authentication Successful</h2>
-                <p>Resuming transaction...</p>
+                <h2>✅ Autenticación Exitosa</h2>
+                <p>Volviendo al chat automáticamente...</p>
             </body>
         </html>
         """
         return HTMLResponse(content=html_content)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Login failed: {str(e)}")
-
+    
 # ==========================================
 # FRONTEND UI (BOTIBANK)
 # ==========================================
@@ -158,7 +164,6 @@ def get_ui():
         <title>BotiBank | AI-Powered Banking</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-        <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%233b82f6'/><path d='M30 30h40v40H30z' fill='none' stroke='white' stroke-width='8'/><circle cx='50' cy='50' r='10' fill='white'/></svg>" />
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
             body { font-family: 'Space Grotesk', sans-serif; background-color: #020617; color: #f8fafc; overflow-x: hidden; }
@@ -198,7 +203,6 @@ def get_ui():
 
         <div class="relative pt-40 pb-20 sm:pt-48 sm:pb-32 text-center">
             <h1 class="text-5xl sm:text-7xl font-bold tracking-tight mb-8">The future of banking <br><span class="text-transparent bg-clip-text bg-gradient-to-r from-boti-blue to-boti-cyan">is now conversational.</span></h1>
-            <button class="bg-white text-slate-900 px-8 py-3.5 rounded-full font-bold shadow-xl mx-auto flex items-center gap-2"><i class="fa-solid fa-bolt text-yellow-500"></i> Open a Zero Account</button>
         </div>
 
         <button id="chat-toggle" onclick="toggleChat()" class="fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-r from-boti-blue to-boti-cyan rounded-full shadow-[0_0_20px_rgba(6,182,212,0.4)] flex items-center justify-center text-white text-2xl hover:scale-110 transition-transform z-50">
@@ -210,7 +214,7 @@ def get_ui():
             <div class="bg-boti-dark p-5 border-b border-white/10 flex justify-between items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-gradient-to-br from-boti-blue to-boti-cyan rounded-xl flex items-center justify-center text-white"><i class="fa-solid fa-bolt text-xl"></i></div>
-                    <div><h3 class="font-bold text-white text-base">BotiBank AI</h3><p class="text-xs text-gray-400">Powered by LangChain & WSO2</p></div>
+                    <div><h3 class="font-bold text-white text-base">BotiBank AI</h3><p class="text-xs text-emerald-400 font-medium"><i class="fa-solid fa-shield-check"></i> Agent Auth Active</p></div>
                 </div>
                 <button onclick="toggleChat()" class="text-gray-400 hover:text-white transition-colors w-10 h-10 rounded-full hover:bg-white/10"><i class="fa-solid fa-chevron-down text-lg"></i></button>
             </div>
@@ -223,15 +227,6 @@ def get_ui():
             </div>
 
             <div class="p-5 bg-boti-dark border-t border-white/10">
-                <div class="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide">
-                    <button onclick="sendSuggestion('View my mortgage balance for HIP-001')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-white/5 border border-white/10 hover:bg-boti-blue/20 hover:text-boti-cyan hover:border-boti-blue/50 rounded-lg transition-colors">
-                        <i class="fa-solid fa-house mr-1"></i> Mortgage
-                    </button>
-                    <button onclick="sendSuggestion('Transfer money')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-white/5 border border-white/10 hover:bg-boti-blue/20 hover:text-boti-cyan hover:border-boti-blue/50 rounded-lg transition-colors">
-                        <i class="fa-solid fa-money-bill-transfer mr-1"></i> Transfer
-                    </button>
-                </div>
-                
                 <div class="relative flex items-center">
                     <input id="user-input" type="text" placeholder="Type a command..." class="w-full bg-white border border-gray-300 focus:border-boti-blue focus:ring-2 focus:ring-boti-blue/20 rounded-xl pl-4 pr-12 py-4 text-sm text-black placeholder-gray-400 focus:outline-none transition-all shadow-inner" onkeypress="if(event.key === 'Enter') sendMessage()">
                     <button onclick="sendMessage()" class="absolute right-2 top-2 bottom-2 aspect-square bg-boti-blue hover:bg-blue-400 text-white rounded-lg flex items-center justify-center"><i class="fa-solid fa-paper-plane text-sm"></i></button>
@@ -261,13 +256,13 @@ def get_ui():
                 }
             }
 
-            function sendSuggestion(text) { userInput.value = text; sendMessage(); }
-
             function appendMessage(text, isUser) {
                 const msgDiv = document.createElement("div");
                 msgDiv.className = `flex gap-3 max-w-[90%] ${isUser ? 'ml-auto flex-row-reverse' : ''}`;
                 
                 let formattedText = text;
+                
+                // 🔴 MICRO-CIRUGÍA: La expresión regular exacta del ejemplo Aura AI
                 const urlRegex = /<(https?:\/\/[^>]+)>/g;
                 
                 if (urlRegex.test(text)) {
@@ -279,7 +274,8 @@ def get_ui():
                         }
                     });
                 }
-                formattedText = formattedText.replace(/\\*\\*(.*?)\\*\\*/g, "<b>$1</b>");
+                
+                formattedText = formattedText.replace(/\*\*(.*?)\*\*/g, "<b>$1</b>");
 
                 const avatar = isUser
                     ? `<div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 mt-1"><i class="fa-solid fa-user text-white text-sm"></i></div>`
@@ -307,6 +303,7 @@ def get_ui():
                 if(el) el.remove();
             }
 
+            // Continuación automática
             window.addEventListener("message", async function(event) {
                 if (event.data && event.data.type === "WSO2_AUTH_SUCCESS" && event.data.sessionId === sessionId) {
                     const alertDiv = document.createElement("div");
