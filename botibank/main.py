@@ -27,7 +27,6 @@ IDENTITY_SERVER_BASE_URL = WSO2_TOKEN_URL.replace("/oauth2/token", "") if WSO2_T
 WSO2_CLIENT_ID = os.getenv("WSO2_CLIENT_ID", "")
 WSO2_CLIENT_SECRET = os.getenv("WSO2_CLIENT_SECRET", "")
 FASTAPI_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://127.0.0.1:5000")
-# 🔴 Forzamos el puerto 5000 para evitar el invalid_callback
 REDIRECT_URI = "http://127.0.0.1:5000/callback"
 
 app = FastAPI(title="BotiBank Frontend")
@@ -120,7 +119,7 @@ def callback(code: str, state: str):
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": REDIRECT_URI  # 🔴 Hardcodeado al puerto 5000
+                "redirect_uri": REDIRECT_URI  
             },
             verify=False
         )
@@ -166,27 +165,44 @@ def get_ui():
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
-            body { font-family: 'Space Grotesk', sans-serif; background-color: #020617; color: #f8fafc; overflow-x: hidden; }
-            .bg-tech-pattern {
-                background-image: 
-                    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.25) 0px, transparent 50%),
-                    radial-gradient(at 100% 100%, rgba(6, 182, 212, 0.25) 0px, transparent 50%),
-                    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-                    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-                background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+            body { font-family: 'Space Grotesk', sans-serif; overflow-x: hidden; }
+            
+            .bg-futuristic {
+                background-color: #020617;
+                background-image: linear-gradient(rgba(2, 6, 23, 0.7), rgba(2, 6, 23, 0.85)), url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=2070&q=80');
+                background-size: cover;
+                background-position: center;
+                background-attachment: fixed;
             }
+            
+            .glass-hero {
+                background: rgba(15, 23, 42, 0.4);
+                backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            }
+
             tailwind.config = { theme: { extend: { colors: { boti: { blue: '#3b82f6', cyan: '#06b6d4', dark: '#0f172a', panel: '#1e293b' } } } } }
             .typing-indicator span { display: inline-block; width: 6px; height: 6px; background-color: #94a3b8; border-radius: 50%; animation: typing 1.4s infinite ease-in-out both; margin-right: 3px; }
             .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
             .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
             @keyframes typing { 0%, 80%, 100% { transform: scale(0); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+            
             #chat-box::-webkit-scrollbar { width: 4px; }
             #chat-box::-webkit-scrollbar-track { background: transparent; }
             #chat-box::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+            
+            .scrollbar-hide::-webkit-scrollbar { display: none; }
+            .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+            
+            .fade-in-up { animation: fadeInUp 1s ease-out forwards; }
+            @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         </style>
     </head>
-    <body class="antialiased bg-tech-pattern min-h-screen">
-        <nav class="fixed w-full z-40 top-0 bg-boti-dark/70 backdrop-blur-xl border-b border-white/10">
+    <body class="antialiased bg-futuristic min-h-screen text-white">
+        
+        <nav class="fixed w-full z-40 top-0 bg-slate-900/50 backdrop-blur-xl border-b border-white/5">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between items-center h-20">
                     <div class="flex items-center gap-3">
@@ -197,39 +213,79 @@ def get_ui():
                         </svg>
                         <h1 class="text-2xl font-bold tracking-tight text-white">Boti<span class="text-boti-cyan">Bank</span></h1>
                     </div>
+                    <div class="hidden md:flex space-x-8 text-sm font-medium text-gray-300">
+                        <a href="#" class="hover:text-white transition-colors">Personal</a>
+                        <a href="#" class="hover:text-white transition-colors">Business</a>
+                        <a href="#" class="hover:text-white transition-colors">Wealth</a>
+                    </div>
                 </div>
             </div>
         </nav>
 
-        <div class="relative pt-40 pb-20 sm:pt-48 sm:pb-32 text-center">
-            <h1 class="text-5xl sm:text-7xl font-bold tracking-tight mb-8">The future of banking <br><span class="text-transparent bg-clip-text bg-gradient-to-r from-boti-blue to-boti-cyan">is now conversational.</span></h1>
-        </div>
+        <main class="relative flex items-center justify-center min-h-screen px-4 pt-20">
+            <div class="glass-hero p-10 sm:p-16 rounded-[2.5rem] max-w-4xl w-full text-center relative overflow-hidden fade-in-up">
+                
+                <div class="absolute -top-20 -right-20 w-64 h-64 bg-boti-blue rounded-full mix-blend-screen filter blur-[80px] opacity-40 animate-pulse"></div>
+                <div class="absolute -bottom-20 -left-20 w-64 h-64 bg-boti-cyan rounded-full mix-blend-screen filter blur-[80px] opacity-30 animate-pulse" style="animation-delay: 1s;"></div>
+                
+                <h1 class="text-5xl sm:text-7xl font-bold tracking-tight mb-6 z-10 relative">The future of banking <br><span class="text-transparent bg-clip-text bg-gradient-to-r from-boti-blue to-boti-cyan drop-shadow-sm">is now conversational.</span></h1>
+                
+                <p class="text-lg text-gray-300 mb-10 max-w-2xl mx-auto z-10 relative font-light leading-relaxed">
+                    Experience seamless financial management powered by Artificial Intelligence. 
+                    Transfer funds, pay your mortgages, and check balances instantly with our state-of-the-art secure agent.
+                </p>
+                
+                <div class="flex flex-col sm:flex-row gap-4 justify-center items-center z-10 relative">
+                    <button class="bg-white text-slate-900 px-8 py-4 rounded-full font-bold shadow-[0_0_30px_rgba(255,255,255,0.2)] hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.4)] transition-all flex items-center gap-2">
+                        <i class="fa-solid fa-bolt text-yellow-500"></i> Open a Zero Account
+                    </button>
+                    <button onclick="toggleChat()" class="bg-transparent border border-white/20 hover:bg-white/10 text-white px-8 py-4 rounded-full font-bold transition-all flex items-center gap-2">
+                        <i class="fa-solid fa-comment-dots text-boti-cyan"></i> Try the AI Agent
+                    </button>
+                </div>
+            </div>
+        </main>
 
-        <button id="chat-toggle" onclick="toggleChat()" class="fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-r from-boti-blue to-boti-cyan rounded-full shadow-[0_0_20px_rgba(6,182,212,0.4)] flex items-center justify-center text-white text-2xl hover:scale-110 transition-transform z-50">
+        <button id="chat-toggle" onclick="toggleChat()" class="fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-r from-boti-blue to-boti-cyan rounded-full shadow-[0_0_30px_rgba(59,130,246,0.5)] flex items-center justify-center text-white text-2xl hover:scale-110 transition-transform z-50">
             <i class="fa-solid fa-robot"></i>
         </button>
 
-        <div id="chat-panel" class="fixed bottom-28 right-4 md:right-6 w-[90vw] md:w-[450px] h-[750px] max-h-[85vh] bg-boti-panel/95 backdrop-blur-xl border border-white/10 rounded-3xl shadow-2xl flex flex-col overflow-hidden z-50 transform scale-0 origin-bottom-right transition-transform duration-300 opacity-0 pointer-events-none">
-            
+        <div id="chat-panel" class="fixed bottom-28 right-4 md:right-6 w-[90vw] md:w-[550px] h-[750px] max-h-[85vh] bg-boti-panel/95 backdrop-blur-xl border border-white/10 rounded-3xl shadow-2xl flex flex-col overflow-hidden z-50 transform scale-0 origin-bottom-right transition-transform duration-300 opacity-0 pointer-events-none">            
             <div class="bg-boti-dark p-5 border-b border-white/10 flex justify-between items-center">
                 <div class="flex items-center gap-3">
-                    <div class="w-12 h-12 bg-gradient-to-br from-boti-blue to-boti-cyan rounded-xl flex items-center justify-center text-white"><i class="fa-solid fa-bolt text-xl"></i></div>
+                    <div class="w-12 h-12 bg-gradient-to-br from-boti-blue to-boti-cyan rounded-xl flex items-center justify-center text-white shadow-lg"><i class="fa-solid fa-bolt text-xl"></i></div>
                     <div><h3 class="font-bold text-white text-base">BotiBank AI</h3><p class="text-xs text-emerald-400 font-medium"><i class="fa-solid fa-shield-check"></i> Agent Auth Active</p></div>
                 </div>
                 <button onclick="toggleChat()" class="text-gray-400 hover:text-white transition-colors w-10 h-10 rounded-full hover:bg-white/10"><i class="fa-solid fa-chevron-down text-lg"></i></button>
             </div>
 
-            <div id="chat-box" class="flex-1 p-5 overflow-y-auto flex flex-col gap-5 bg-[#0f172a]/40">
+            <div id="chat-box" class="flex-1 p-5 overflow-y-auto flex flex-col gap-5 bg-[#0f172a]/60">
                 <div class="flex gap-3 max-w-[90%]">
                     <div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 shadow-md"><i class="fa-solid fa-robot text-white text-sm"></i></div>
-                    <div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none text-sm text-gray-200">Hello! I am ready to manage your finances. Try typing: <b>"Transfer $50 to CTA-999"</b> or <b>"Pay my mortgage HIP-001"</b></div>
+                    <div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none text-sm text-gray-200 shadow-sm">Hello! I am ready to manage your finances. Try typing: <b>"Transfer $50 to CTA-999"</b> or <b>"Pay my mortgage HIP-001"</b></div>
                 </div>
             </div>
 
             <div class="p-5 bg-boti-dark border-t border-white/10">
+                <!-- 🔴 Menú Restaurado -->
+                <div class="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
+                    <button onclick="sendSuggestion('Listar las cuentas que tengo')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-slate-800/80 border border-white/10 hover:bg-boti-blue/30 hover:text-white hover:border-boti-blue/50 rounded-xl transition-all shadow-sm">
+                        <i class="fa-solid fa-wallet mr-1"></i> Cuentas
+                    </button>
+                    <button onclick="sendSuggestion('Hacer una transferencia')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-slate-800/80 border border-white/10 hover:bg-boti-blue/30 hover:text-white hover:border-boti-blue/50 rounded-xl transition-all shadow-sm">
+                        <i class="fa-solid fa-money-bill-transfer mr-1"></i> Transferir
+                    </button>
+                    <button onclick="sendSuggestion('Ver mis hipotecas')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-slate-800/80 border border-white/10 hover:bg-boti-blue/30 hover:text-white hover:border-boti-blue/50 rounded-xl transition-all shadow-sm">
+                        <i class="fa-solid fa-house-user mr-1"></i> Hipotecas
+                    </button>
+                    <button onclick="sendSuggestion('Quiero pagar un servicio')" class="whitespace-nowrap px-4 py-2 text-xs font-medium text-gray-300 bg-slate-800/80 border border-white/10 hover:bg-boti-blue/30 hover:text-white hover:border-boti-blue/50 rounded-xl transition-all shadow-sm">
+                        <i class="fa-solid fa-file-invoice-dollar mr-1"></i> Servicios
+                    </button>
+                </div>
+
                 <div class="relative flex items-center">
-                    <input id="user-input" type="text" placeholder="Type a command..." class="w-full bg-white border border-gray-300 focus:border-boti-blue focus:ring-2 focus:ring-boti-blue/20 rounded-xl pl-4 pr-12 py-4 text-sm text-black placeholder-gray-400 focus:outline-none transition-all shadow-inner" onkeypress="if(event.key === 'Enter') sendMessage()">
-                    <button onclick="sendMessage()" class="absolute right-2 top-2 bottom-2 aspect-square bg-boti-blue hover:bg-blue-400 text-white rounded-lg flex items-center justify-center"><i class="fa-solid fa-paper-plane text-sm"></i></button>
+                    <input id="user-input" type="text" placeholder="Type a command..." class="w-full bg-slate-800 border border-slate-600 focus:border-boti-blue focus:ring-2 focus:ring-boti-blue/30 rounded-xl pl-5 pr-12 py-4 text-sm text-white placeholder-gray-400 focus:outline-none transition-all shadow-inner" onkeypress="if(event.key === 'Enter') sendMessage()">
+                    <button onclick="sendMessage()" class="absolute right-2 top-2 bottom-2 aspect-square bg-gradient-to-r from-boti-blue to-boti-cyan hover:scale-105 transition-transform text-white rounded-lg flex items-center justify-center shadow-md"><i class="fa-solid fa-paper-plane text-sm"></i></button>
                 </div>
             </div>
         </div>
@@ -256,13 +312,18 @@ def get_ui():
                 }
             }
 
+            // 🔴 Función de sugerencias restaurada
+            function sendSuggestion(text) {
+                userInput.value = text;
+                sendMessage();
+            }
+
             function appendMessage(text, isUser) {
                 const msgDiv = document.createElement("div");
                 msgDiv.className = `flex gap-3 max-w-[90%] ${isUser ? 'ml-auto flex-row-reverse' : ''}`;
                 
                 let formattedText = text;
                 
-                // 🔴 MICRO-CIRUGÍA: La expresión regular exacta del ejemplo Aura AI
                 const urlRegex = /<(https?:\/\/[^>]+)>/g;
                 
                 if (urlRegex.test(text)) {
@@ -270,7 +331,7 @@ def get_ui():
                         if (url.includes("oauth2/authorize")) {
                             return `<div class="mt-4 mb-2"><a href="${url}" target="_blank" rel="opener" class="inline-flex items-center gap-2 bg-gradient-to-r from-boti-blue to-boti-cyan hover:opacity-90 text-white font-semibold py-2.5 px-5 rounded-xl shadow-lg transition-all"><i class="fa-solid fa-shield-halved"></i> Secure Bank Login</a></div>`;
                         } else {
-                            return `<a href="${url}" target="_blank" class="text-boti-cyan underline">${url}</a>`;
+                            return `<a href="${url}" target="_blank" class="text-boti-cyan underline hover:text-blue-400">${url}</a>`;
                         }
                     });
                 }
@@ -278,9 +339,12 @@ def get_ui():
                 formattedText = formattedText.replace(/\*\*(.*?)\*\*/g, "<b>$1</b>");
 
                 const avatar = isUser
-                    ? `<div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 mt-1"><i class="fa-solid fa-user text-white text-sm"></i></div>`
-                    : `<div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1 shadow-md shadow-blue-500/20"><i class="fa-solid fa-robot text-white text-sm"></i></div>`;
-                const bubbleClass = isUser ? `bg-boti-blue text-white rounded-2xl rounded-tr-none font-medium` : `bg-boti-dark border border-white/5 text-gray-200 rounded-2xl rounded-tl-none`;
+                    ? `<div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 mt-1 shadow-md"><i class="fa-solid fa-user text-white text-sm"></i></div>`
+                    : `<div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1 shadow-md"><i class="fa-solid fa-robot text-white text-sm"></i></div>`;
+                
+                const bubbleClass = isUser 
+                    ? `bg-gradient-to-r from-boti-blue to-boti-cyan text-white rounded-2xl rounded-tr-none font-medium shadow-md` 
+                    : `bg-boti-panel border border-white/10 text-gray-200 rounded-2xl rounded-tl-none shadow-md`;
 
                 msgDiv.innerHTML = `${avatar}<div class="p-4 text-sm ${bubbleClass} leading-relaxed">${formattedText}</div>`;
                 chatBox.appendChild(msgDiv);
@@ -292,7 +356,7 @@ def get_ui():
                 const msgDiv = document.createElement("div");
                 msgDiv.id = typingId;
                 msgDiv.className = `flex gap-3 max-w-[90%]`;
-                msgDiv.innerHTML = `<div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1"><i class="fa-solid fa-robot text-white text-sm"></i></div><div class="bg-boti-dark border border-white/5 p-4 rounded-2xl rounded-tl-none flex items-center"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+                msgDiv.innerHTML = `<div class="w-10 h-10 rounded-full bg-gradient-to-r from-boti-blue to-boti-cyan flex items-center justify-center flex-shrink-0 mt-1 shadow-md"><i class="fa-solid fa-robot text-white text-sm"></i></div><div class="bg-boti-panel border border-white/10 p-4 rounded-2xl rounded-tl-none flex items-center shadow-md"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                 chatBox.appendChild(msgDiv);
                 chatBox.scrollTop = chatBox.scrollHeight;
                 return typingId;
@@ -303,7 +367,6 @@ def get_ui():
                 if(el) el.remove();
             }
 
-            // Continuación automática
             window.addEventListener("message", async function(event) {
                 if (event.data && event.data.type === "WSO2_AUTH_SUCCESS" && event.data.sessionId === sessionId) {
                     const alertDiv = document.createElement("div");
