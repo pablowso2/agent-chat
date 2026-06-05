@@ -17,6 +17,8 @@ os.environ["LANGCHAIN_API_KEY"] = ""
 
 load_dotenv()
 
+from asgardeo import AsgardeoConfig
+from asgardeo_ai import AgentConfig, AgentAuthManager
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
@@ -38,6 +40,19 @@ WSO2_MCP_URL = os.getenv("WSO2_MCP_URL", "https://localhost:8243/botibankmcp/1.0
 FASTAPI_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://127.0.0.1:5000")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "hermes-2-pro-llama-3-8b")
 LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+
+IDENTITY_SERVER_CONFIG = AsgardeoConfig(
+    base_url=IDENTITY_SERVER_BASE_URL,
+    client_id=WSO2_CLIENT_ID,
+    client_secret=os.getenv("WSO2_CLIENT_SECRET", ""),
+    redirect_uri=REDIRECT_URI
+)
+
+# 🔴 CONFIGURACIÓN DEL AGENTE PARA EL SDK M2M
+AGENT_CONFIG = AgentConfig(
+    agent_id=os.getenv("AGENT_ID", ""),
+    agent_secret=os.getenv("AGENT_SECRET", "")
+)
 
 # ==========================================
 # FUNCIONES AUXILIARES (LOGIN Y JWT)
@@ -73,32 +88,44 @@ def get_username_from_token(token: str) -> str:
         return "usuario_anonimo"
 
 # ==========================================
-# SEGURIDAD WSO2 API MANAGER (APIM)
+# 🔴 SEGURIDAD WSO2: AGENT AUTH MANAGER & APIM
 # ==========================================
 
-async def get_apim_access_token(scope: str = "") -> str:
-    """Obtiene un Bearer Token de APIM usando Client Credentials para el Gateway."""
-    credentials = f"{WSO2_CONSUMER_KEY}:{WSO2_CONSUMER_SECRET}"
-    encoded_credentials = base64.b64encode(credentials.encode()).decode()
-
-    headers = {
-        "Authorization": f"Basic {encoded_credentials}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    data = {"grant_type": "client_credentials"}
-    if scope:
-        data["scope"] = scope
-
-    async with httpx.AsyncClient(verify=False) as client:
-        resp = await client.post(WSO2_APIM_TOKEN_URL, headers=headers, data=data)
-        if resp.status_code != 200:
-            raise Exception(f"APIM Token Rejected: {resp.text}")
-        return resp.json().get("access_token")
+async def get_agent_token_for_scopes(scopes: list) -> str:
+    """Obtiene el Token de Agente usando la autenticación nativa de WSO2 Identity Server."""
+    try:
+        print(f"\n[🤖 AGENT AUTH] Iniciando secuencia de autenticación con AgentAuthManager...")
+        async with AgentAuthManager(IDENTITY_SERVER_CONFIG, AGENT_CONFIG) as auth_manager:
+            agent_token = await auth_manager.get_agent_token(scopes)
+            
+        print("✅ [WSO2] Token de Agente obtenido con éxito.")
+        return agent_token.access_token
+    except Exception as e:
+        print(f"❌ [ERROR AGENT AUTH]: {str(e)}")
+        raise e
 
 async def invoke_mcp_tool(tool_name: str, arguments: dict, scope: str = "") -> str:
-    """Ejecuta llamadas JSON-RPC al servidor MCP autenticándose primero con WSO2 APIM."""
+    """Ejecuta llamadas JSON-RPC resolviendo el conflicto entre IS y APIM Gateway."""
+    
+    # 1. Mantenemos tu lógica de AgentAuthManager impecable
     try:
-        apim_token = await get_apim_access_token(scope)
+        scopes = [scope] if scope else []
+        agent_token = await get_agent_token_for_scopes(scopes)
+    except Exception as e:
+        return f"Error obteniendo token del Agente: {str(e)}"
+
+    # 2. NUEVO: Obtenemos el pase del APIM Gateway para que no lance 401
+    try:
+        credentials = f"{WSO2_CONSUMER_KEY}:{WSO2_CONSUMER_SECRET}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        apim_headers = {
+            "Authorization": f"Basic {encoded_credentials}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        async with httpx.AsyncClient(verify=False) as client:
+            resp_apim = await client.post(WSO2_APIM_TOKEN_URL, headers=apim_headers, data={"grant_type": "client_credentials"})
+            resp_apim.raise_for_status()
+            apim_token = resp_apim.json().get("access_token")
     except Exception as e:
         return f"Error obteniendo token del APIM Gateway: {str(e)}"
 
@@ -109,14 +136,17 @@ async def invoke_mcp_tool(tool_name: str, arguments: dict, scope: str = "") -> s
         "params": {"name": tool_name, "arguments": arguments}
     }
     
+    # 3. Inyectamos el APIM Token en Authorization para atravesar el Gateway 8243
+    # Y enviamos el Agent Token en una cabecera secundaria por si el backend Ballerina lo requiere.
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Authorization": f"Bearer {apim_token}"
+        "Authorization": f"Bearer {apim_token}",
+        "X-Agent-Auth": f"Bearer {agent_token}"
     }
     
     try:
-        print(f"   [📡 MCP REQUEST] Llamando a {tool_name} a través del APIM Gateway...")
+        print(f"   [📡 MCP REQUEST] Atravesando APIM Gateway para llamar a {tool_name}...")
         async with httpx.AsyncClient(verify=False) as client:
             resp = await client.post(WSO2_MCP_URL, json=payload, headers=headers)
             resp.raise_for_status()
@@ -126,7 +156,7 @@ async def invoke_mcp_tool(tool_name: str, arguments: dict, scope: str = "") -> s
                 content_list = data["result"]["content"]
                 result_text = "\n".join([item.get("text", "") for item in content_list if item.get("type") == "text"])
                 
-                # 🔴 SEGURO ANTI-ALUCINACIÓN PARA RESULTADOS VACÍOS
+                # SEGURO ANTI-ALUCINACIÓN
                 if not result_text.strip() or result_text.strip() == "[]":
                     return "RESULTADO: No hay datos registrados. El sistema devolvió una lista vacía. INFORMA AL USUARIO QUE NO TIENE CUENTAS/DATOS Y NO INVENTES NADA."
                     
@@ -135,6 +165,8 @@ async def invoke_mcp_tool(tool_name: str, arguments: dict, scope: str = "") -> s
             elif "error" in data:
                 return f"MCP Error: {data['error']}"
             return json.dumps(data.get("result", data))
+    except httpx.HTTPStatusError as http_err:
+        return f"Error HTTP del Gateway: {http_err.response.status_code} - {http_err.response.text}"
     except Exception as e:
         return f"Error conectando al servidor MCP: {str(e)}"
 
@@ -143,18 +175,33 @@ async def invoke_mcp_tool(tool_name: str, arguments: dict, scope: str = "") -> s
 # ==========================================
 
 @tool
-async def get_clientes() -> str:
+async def get_clientes(config: RunnableConfig) -> str:
     """Listar todos los clientes."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile clientes:read")
     return await invoke_mcp_tool("get_clientes", {}, "clientes:read")
 
 @tool
-async def post_clientes(id: str, nombre: str, apellido: str) -> str:
+async def post_clientes(id: str, nombre: str, apellido: str, config: RunnableConfig) -> str:
     """Agregar un cliente nuevo."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile clientes:write")
     return await invoke_mcp_tool("post_clientes", {"requestBody": {"id": id, "nombre": nombre, "apellido": apellido}}, "clientes:write")
 
 @tool
-async def delete_clientes_by_clienteId(clienteId: str) -> str:
+async def delete_clientes_by_clienteId(clienteId: str, config: RunnableConfig) -> str:
     """Eliminar un cliente."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile clientes:write")
     return await invoke_mcp_tool("delete_clientes_by_clienteId", {"clienteId": clienteId}, "clientes:write")
 
 @tool
@@ -182,23 +229,43 @@ async def post_cuentas(cuentaId: str, config: RunnableConfig) -> str:
     return await invoke_mcp_tool("post_cuentas", {"requestBody": {"cuentaId": cuentaId, "clienteId": username}}, "cuentas:write")
 
 @tool
-async def delete_cuentas_by_cuentaId(cuentaId: str, clienteId: str) -> str:
+async def delete_cuentas_by_cuentaId(cuentaId: str, clienteId: str, config: RunnableConfig) -> str:
     """Eliminar una cuenta."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile cuentas:write")
     return await invoke_mcp_tool("delete_cuentas_by_cuentaId", {"cuentaId": cuentaId, "clienteId": clienteId}, "cuentas:write")
 
 @tool
-async def get_cuentas_by_cuentaId_movimientos(cuentaId: str) -> str:
+async def get_cuentas_by_cuentaId_movimientos(cuentaId: str, config: RunnableConfig) -> str:
     """Ver los movimientos y saldo de la cuenta."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile cuentas:read")
     return await invoke_mcp_tool("get_cuentas_by_cuentaId_movimientos", {"cuentaId": cuentaId}, "cuentas:read")
 
 @tool
-async def post_cuentas_by_cuentaId_ingresar(cuentaId: str, monto: float) -> str:
+async def post_cuentas_by_cuentaId_ingresar(cuentaId: str, monto: float, config: RunnableConfig) -> str:
     """Ingresar dinero a la cuenta por ventanilla."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile cuentas:write")
     return await invoke_mcp_tool("post_cuentas_by_cuentaId_ingresar", {"cuentaId": cuentaId, "requestBody": {"monto": monto}}, "cuentas:write")
 
 @tool
-async def post_cuentas_by_cuentaId_sacar(cuentaId: str, monto: float) -> str:
+async def post_cuentas_by_cuentaId_sacar(cuentaId: str, monto: float, config: RunnableConfig) -> str:
     """Sacar dinero de la cuenta."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile cuentas:write")
     return await invoke_mcp_tool("post_cuentas_by_cuentaId_sacar", {"cuentaId": cuentaId, "requestBody": {"monto": monto}}, "cuentas:write")
 
 @tool
@@ -209,22 +276,36 @@ async def post_cuentas_by_cuentaId_transferir(cuentaId: str, cuentaDestino: str,
     session_id = configurable.get("session_id", "default")
     if not user_token:
         return generar_instruccion_login(session_id, "openid profile transfer:write")
-    
     return await invoke_mcp_tool("post_cuentas_by_cuentaId_transferir", {"cuentaId": cuentaId, "requestBody": {"cuentaDestino": cuentaDestino, "monto": monto, "concepto": concepto}}, "transfer:write")
 
 @tool
-async def get_servicios() -> str:
+async def get_servicios(config: RunnableConfig) -> str:
     """Listar servicios disponibles para pagar."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile servicios:read")
     return await invoke_mcp_tool("get_servicios", {}, "servicios:read")
 
 @tool
-async def post_servicios(codigoServicio: str, nombre: str, monto: float, vencimiento: str) -> str:
+async def post_servicios(codigoServicio: str, nombre: str, monto: float, vencimiento: str, config: RunnableConfig) -> str:
     """Agregar un servicio nuevo al sistema."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile servicios:write")
     return await invoke_mcp_tool("post_servicios", {"requestBody": {"codigoServicio": codigoServicio, "nombre": nombre, "monto": monto, "vencimiento": vencimiento}}, "servicios:write")
 
 @tool
-async def delete_servicios_by_codigoServicio(codigoServicio: str) -> str:
+async def delete_servicios_by_codigoServicio(codigoServicio: str, config: RunnableConfig) -> str:
     """Eliminar un servicio del sistema."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile servicios:write")
     return await invoke_mcp_tool("delete_servicios_by_codigoServicio", {"codigoServicio": codigoServicio}, "servicios:write")
 
 @tool
@@ -235,22 +316,36 @@ async def post_servicios_pagar(cuentaOrigen: str, codigoServicio: str, monto: fl
     session_id = configurable.get("session_id", "default")
     if not user_token:
         return generar_instruccion_login(session_id, "openid profile service:pay")
-    
     return await invoke_mcp_tool("post_servicios_pagar", {"requestBody": {"cuentaOrigen": cuentaOrigen, "codigoServicio": codigoServicio, "monto": monto}}, "service:pay")
 
 @tool
-async def get_hipotecas(clienteId: str) -> str:
+async def get_hipotecas(clienteId: str, config: RunnableConfig) -> str:
     """Listar hipotecas de un cliente."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile hipotecas:read")
     return await invoke_mcp_tool("get_hipotecas", {"clienteId": clienteId}, "hipotecas:read")
 
 @tool
-async def get_hipotecas_by_idHipoteca(idHipoteca: str) -> str:
+async def get_hipotecas_by_idHipoteca(idHipoteca: str, config: RunnableConfig) -> str:
     """Consultar el balance de una hipoteca específica."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile hipotecas:read")
     return await invoke_mcp_tool("get_hipotecas_by_idHipoteca", {"idHipoteca": idHipoteca}, "hipotecas:read")
 
 @tool
-async def post_hipotecas(id: str, clienteId: str, monto: float, vencimiento: str, pagoParcial: float) -> str:
+async def post_hipotecas(id: str, clienteId: str, monto: float, vencimiento: str, pagoParcial: float, config: RunnableConfig) -> str:
     """Otorgar (crear) una nueva hipoteca."""
+    configurable = config.get("configurable", {})
+    user_token = configurable.get("user_token")
+    session_id = configurable.get("session_id", "default")
+    if not user_token:
+        return generar_instruccion_login(session_id, "openid profile hipotecas:write")
     return await invoke_mcp_tool("post_hipotecas", {"requestBody": {"id": id, "clienteId": clienteId, "monto": monto, "vencimiento": vencimiento, "pagoParcial": pagoParcial}}, "hipotecas:write")
 
 @tool
@@ -261,7 +356,6 @@ async def post_hipotecas_by_idHipoteca_pagar(idHipoteca: str, cuentaOrigen: str,
     session_id = configurable.get("session_id", "default")
     if not user_token:
         return generar_instruccion_login(session_id, "openid profile mortgage:pay")
-    
     return await invoke_mcp_tool("post_hipotecas_by_idHipoteca_pagar", {"idHipoteca": idHipoteca, "requestBody": {"cuentaOrigen": cuentaOrigen, "monto": monto}}, "mortgage:pay")
 
 @tool
@@ -316,7 +410,7 @@ def get_agent():
         "REGLA 5: Si el usuario dice que ya inició sesión, ejecuta el comando pendiente directamente sin pedirlo de nuevo.\n"
         "REGLA 6 (CRÍTICA): Si obtienes una 'INSTRUCCIÓN OBLIGATORIA' de una herramienta, DEBES imprimir su contenido EXACTAMENTE como se te entregó (respetando los símbolos < >), sin pensar ni modificar nada.\n"
         "REGLA 7: Para preguntas generales usa 'conocimiento_general'.\n"
-        "REGLA 8 (ANTI-ALUCINACIÓN MÁXIMA): TIENES ESTRICTAMENTE PROHIBIDO inventar números de cuenta, saldos, nombres o datos. Solo puedes responder usando EXACTAMENTE la información JSON que te devuelve la herramienta (por ejemplo, debes mostrar 'CTA-122', no inventar '12345'). Si la herramienta dice que no hay datos, dile al usuario la verdad."
+        "REGLA 8 (ANTI-ALUCINACIÓN MÁXIMA): TIENES ESTRICTAMENTE PROHIBIDO inventar números de cuenta, saldos, nombres o datos. Solo puedes responder usando EXACTAMENTE la información JSON que te devuelve la herramienta."
     )
     
     return create_react_agent(llm, herramientas, checkpointer=memory, prompt=instrucciones)
