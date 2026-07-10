@@ -1,0 +1,21 @@
+levantar app.py
+
+y luego probar:
+
+curl -X POST http://localhost:8000/chat \
+-H "Content-Type: application/json" \
+-d '{
+  "message":"¿Cuál es el estado de la orden 1002?"
+}'
+
+respuesta:
+{
+  "answer": "La orden 1002 pertenece a Maria Gomez y actualmente se encuentra Despachada.",
+  "tool_result": {
+    "found": true,
+    "order_number": "1002",
+    "customer_name": "Maria Gomez",
+    "status": "Despachada",
+    "amount": 250.0
+  }
+}
