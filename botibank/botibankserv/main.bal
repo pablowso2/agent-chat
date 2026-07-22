@@ -72,7 +72,7 @@ function saveDb() returns error? {
 // ==========================================
 // 3. SERVICIO REST API
 // ==========================================
-configurable int port = 8000;
+configurable int port = 9090;
 service /api/v1 on new http:Listener(port) {
 
     // ----------------------------------------
