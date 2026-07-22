@@ -1,13 +1,17 @@
+BotiBank
+---------
 Para realizar el despliegue es importante
 python3 -m venv .
 python -m pip install -r requirements.txt
 
-Dentro de BotiBank
+PARA LANZARLO
+-------------
 
-Para arrancarlo
- uvicorn main:app --port 5000
-
+Botibankserv - Backend
  Bal run main.bal
+
+PARA ARRANCAR FRONTAL
+uvicorn main:app --port 5000
 
 Con AgentManager
 amp-instrument python main.py   
