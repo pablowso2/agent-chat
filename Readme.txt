@@ -1,3 +1,7 @@
+Para realizar el despliegue es importante
+python3 -m venv .
+python -m pip install -r requirements.txt
+
 Dentro de BotiBank
 
 Para arrancarlo
