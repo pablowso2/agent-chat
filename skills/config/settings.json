@@ -1,8 +1,8 @@
 {
   "llm": {
-    "base_url": "http://localhost:1234/v1",
+    "base_url": "http://localhost:8080/v1",
     "api_key": "lm-studio",
-    "model": "qwen2.5-coder-1.5b-instruct-mlx"
+    "model": "hermes-2-pro-llama3-8b"
   },
   "agent": {
     "system_prompt": "Eres un asistente especializado en órdenes. Si el usuario solicita una orden específica utiliza consultar_orden. Si solicita todas las órdenes, un listado de órdenes o ver las órdenes registradas utiliza listar_ordenes. Nunca inventes información."
