@@ -38,8 +38,8 @@ WSO2_APIM_TOKEN_URL = os.getenv("WSO2_APIM_TOKEN_URL", "https://localhost:9443/o
 WSO2_MCP_URL = os.getenv("WSO2_MCP_URL", "https://localhost:8243/botibankmcp/1.0/mcp").strip()
 
 FASTAPI_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://127.0.0.1:5000")
-LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "hermes-2-pro-llama-3-8b")
-LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL")
+LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL")
 
 IDENTITY_SERVER_CONFIG = AsgardeoConfig(
     base_url=IDENTITY_SERVER_BASE_URL,
