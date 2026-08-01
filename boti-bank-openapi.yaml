@@ -1,0 +1,1903 @@
+openapi: 3.0.3
+info:
+  title: BotiBankAPI
+  description: >-
+    API REST para operaciones bancarias completas, gestión de clientes, cuentas,
+    servicios e hipotecas.
+  version: 1.2.0
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Servidor Local
+security:
+  - default: []
+tags:
+  - name: Clientes
+    description: Gestión de clientes del banco (alta, baja, listado)
+  - name: Cuentas
+    description: >-
+      Alta/baja de cuentas y operaciones (transferencias, movimientos, ingresos,
+      retiros)
+  - name: Servicios
+    description: Gestión y pago de servicios adheridos (luz, agua, gas)
+  - name: Hipotecas
+    description: Gestión, consulta y pago de créditos hipotecarios
+paths:
+  /clientes:
+    get:
+      tags:
+        - Clientes
+      summary: Listar todos los clientes
+      responses:
+        '200':
+          description: Lista de clientes recuperada con éxito
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cliente'
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+
+        if (!responses[200]) {
+         responses [200] = [];
+        }
+
+        responses[200]["application/json"] = [ {
+          "id" : "76543210A",
+          "nombre" : "Ana",
+          "apellido" : "García"
+        } ];
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json"; // assign whatever available
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+    post:
+      tags:
+        - Clientes
+      summary: Agregar un cliente nuevo
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cliente'
+        required: true
+      responses:
+        '201':
+          description: Cliente creado con éxito
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[201]) {
+          responses[201] = [];
+        }
+
+        responses[201]["application/json"] = "";
+
+        responses[201]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 201;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /clientes/{clienteId}:
+    delete:
+      tags:
+        - Clientes
+      summary: Eliminar un cliente
+      parameters:
+        - name: clienteId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cliente eliminado con éxito
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /cuentas:
+    get:
+      tags:
+        - Cuentas
+      summary: Listar todas las cuentas de un cliente
+      parameters:
+        - name: clienteId
+          in: query
+          description: ID del cliente para filtrar sus cuentas
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de cuentas del cliente recuperada con éxito
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cuenta'
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+
+        if (!responses[200]) {
+         responses [200] = [];
+        }
+
+        responses[200]["application/json"] = [ {
+          "cuentaId" : "1234567890",
+          "clienteId" : "76543210A",
+          "saldo" : 1500.5
+        } ];
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json"; // assign whatever available
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+    post:
+      tags:
+        - Cuentas
+      summary: Agregar una cuenta nueva
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CuentaRequest'
+        required: true
+      responses:
+        '201':
+          description: Cuenta agregada con éxito
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[201]) {
+          responses[201] = [];
+        }
+
+        responses[201]["application/json"] = "";
+
+        responses[201]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 201;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /cuentas/{cuentaId}:
+    delete:
+      tags:
+        - Cuentas
+      summary: Eliminar una cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+        - name: clienteId
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cuenta eliminada con éxito
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /cuentas/{cuentaId}/movimientos:
+    get:
+      tags:
+        - Cuentas
+      summary: Ver los movimientos de la cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de movimientos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Movimiento'
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+
+        if (!responses[200]) {
+         responses [200] = [];
+        }
+
+        responses[200]["application/json"] = [ {
+          "id" : "string",
+          "fecha" : "2015-07-20T15:49:04-07:00",
+          "tipo" : "INGRESO",
+          "monto" : 1.1,
+          "descripcion" : "string"
+        } ];
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json"; // assign whatever available
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /cuentas/{cuentaId}/transferir:
+    post:
+      tags:
+        - Cuentas
+      summary: Hacer una transferencia a otra cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferenciaRequest'
+        required: true
+      responses:
+        '200':
+          description: Transferencia realizada
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /cuentas/{cuentaId}/ingresar:
+    post:
+      tags:
+        - Cuentas
+      summary: Ingresar dinero a la cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MontoRequest'
+        required: true
+      responses:
+        '200':
+          description: Ingreso realizado
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /cuentas/{cuentaId}/sacar:
+    post:
+      tags:
+        - Cuentas
+      summary: Sacar dinero de la cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MontoRequest'
+        required: true
+      responses:
+        '200':
+          description: Retiro realizado
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /servicios:
+    get:
+      tags:
+        - Servicios
+      summary: Listar servicios disponibles para pagar
+      responses:
+        '200':
+          description: Lista de servicios
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Servicio'
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+
+        if (!responses[200]) {
+         responses [200] = [];
+        }
+
+        responses[200]["application/json"] = [ {
+          "codigoServicio" : "ELESUR-1234",
+          "nombre" : "Luz",
+          "monto" : 45.2,
+          "vencimiento" : "2026-06-15"
+        } ];
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json"; // assign whatever available
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+    post:
+      tags:
+        - Servicios
+      summary: Agregar un servicio nuevo
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Servicio'
+        required: true
+      responses:
+        '201':
+          description: Servicio agregado
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[201]) {
+          responses[201] = [];
+        }
+
+        responses[201]["application/json"] = "";
+
+        responses[201]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 201;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /servicios/{codigoServicio}:
+    delete:
+      tags:
+        - Servicios
+      summary: Eliminar un servicio
+      parameters:
+        - name: codigoServicio
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Servicio eliminado
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /servicios/pagar:
+    post:
+      tags:
+        - Servicios
+      summary: Pagar un servicio
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagoServicioRequest'
+        required: true
+      responses:
+        '200':
+          description: Pago procesado
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /hipotecas:
+    get:
+      tags:
+        - Hipotecas
+      summary: Listar hipotecas de un cliente
+      parameters:
+        - name: clienteId
+          in: query
+          description: ID del cliente para filtrar sus hipotecas
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de hipotecas del cliente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Hipoteca'
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+
+        if (!responses[200]) {
+         responses [200] = [];
+        }
+
+        responses[200]["application/json"] = [ {
+          "id" : "HIP-001",
+          "clienteId" : "76543210A",
+          "montoTotal" : 1.1,
+          "balancePendiente" : 1.1,
+          "vencimiento" : "2015-07-20",
+          "pagoParcial" : 1.1
+        } ];
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json"; // assign whatever available
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+    post:
+      tags:
+        - Hipotecas
+      summary: Obtener (crear) una nueva hipoteca
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrearHipotecaRequest'
+        required: true
+      responses:
+        '201':
+          description: Hipoteca otorgada con éxito
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[201]) {
+          responses[201] = [];
+        }
+
+        responses[201]["application/json"] = "";
+
+        responses[201]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 201;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /hipotecas/{idHipoteca}:
+    get:
+      tags:
+        - Hipotecas
+      summary: Consultar el balance de una hipoteca específica
+      parameters:
+        - name: idHipoteca
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detalles y balance de la hipoteca
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hipoteca'
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+
+        if (!responses[200]) {
+         responses [200] = [];
+        }
+
+        responses[200]["application/json"] = {
+          "id" : "HIP-001",
+          "clienteId" : "76543210A",
+          "montoTotal" : 1.1,
+          "balancePendiente" : 1.1,
+          "vencimiento" : "2015-07-20",
+          "pagoParcial" : 1.1
+        };
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json"; // assign whatever available
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+  /hipotecas/{idHipoteca}/pagar:
+    post:
+      tags:
+        - Hipotecas
+      summary: Pagar cuota parcial de la hipoteca
+      parameters:
+        - name: idHipoteca
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagoHipotecaRequest'
+        required: true
+      responses:
+        '200':
+          description: Pago procesado con éxito
+      security:
+        - default: []
+      x-auth-type: Application & Application User
+      x-throttling-tier: Unlimited
+      x-mediation-script: >-
+        var accept = mc.getProperty('AcceptHeader');
+
+        var responseCode = mc.getProperty('query.param.responseCode');
+
+        var responseCodeSC;
+
+        var responses = [];
+
+        if (!responses[200]) {
+          responses[200] = [];
+        }
+
+        responses[200]["application/json"] = "";
+
+        responses[200]["application/xml"] = "";
+
+
+
+        responses[501] = [];
+
+        responses[501]["application/json"] = {
+
+        "code" : 501,
+
+        "description" : "Not Implemented"}
+
+        responses[501]["application/xml"] =
+        <response><code>501</code><description>Not
+        Implemented</description></response>;
+
+
+        if (responseCode == null) {
+         responseCode = 200;
+        }
+
+
+        if (!responses[responseCode]) {
+          if (responses["default"]) {
+            responseCode = "default"
+          } else {
+            responseCode = 501;
+          }
+        }
+
+        if (responseCode === "default") {
+          responseCodeSC = mc.getProperty('query.param.responseCode');
+        } else {
+          responseCodeSC = responseCode;
+        }
+
+        if (accept == null || !responses[responseCode][accept]) {
+         accept = "application/json";
+        }
+
+
+        if (accept == "application/json") {
+         mc.setProperty('CONTENT_TYPE', 'application/json');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadJSON(responses[responseCode]["application/json"]);
+        } else if (accept == "application/xml") {
+         mc.setProperty('CONTENT_TYPE', 'application/xml');
+         mc.setProperty('HTTP_SC', responseCodeSC + "");
+         mc.setPayloadXML(responses[responseCode]["application/xml"]);
+        }
+      x-wso2-application-security:
+        security-types:
+          - oauth2
+        optional: false
+components:
+  schemas:
+    Cliente:
+      required:
+        - apellido
+        - id
+        - nombre
+      type: object
+      properties:
+        id:
+          type: string
+          example: 76543210A
+        nombre:
+          type: string
+          example: Ana
+        apellido:
+          type: string
+          example: García
+    Cuenta:
+      type: object
+      properties:
+        cuentaId:
+          type: string
+          example: '1234567890'
+        clienteId:
+          type: string
+          example: 76543210A
+        saldo:
+          type: number
+          format: float
+          example: 1500.5
+    CuentaRequest:
+      required:
+        - clienteId
+        - cuentaId
+      type: object
+      properties:
+        cuentaId:
+          type: string
+          example: '1234567890'
+        clienteId:
+          type: string
+          example: 76543210A
+    MontoRequest:
+      required:
+        - monto
+      type: object
+      properties:
+        monto:
+          type: number
+          format: float
+          example: 1500.5
+    TransferenciaRequest:
+      required:
+        - cuentaDestino
+        - monto
+      type: object
+      properties:
+        cuentaDestino:
+          type: string
+          example: '0987654321'
+        monto:
+          type: number
+          format: float
+          example: 500
+        concepto:
+          type: string
+          example: Pago alquiler
+    Movimiento:
+      type: object
+      properties:
+        id:
+          type: string
+        fecha:
+          type: string
+          format: date-time
+        tipo:
+          type: string
+          enum:
+            - INGRESO
+            - RETIRO
+            - TRANSFERENCIA_ENVIADA
+            - TRANSFERENCIA_RECIBIDA
+            - PAGO_SERVICIO
+            - PAGO_HIPOTECA
+            - DESEMBOLSO_HIPOTECA
+        monto:
+          type: number
+          format: float
+        descripcion:
+          type: string
+    Servicio:
+      required:
+        - codigoServicio
+        - monto
+        - nombre
+        - vencimiento
+      type: object
+      properties:
+        codigoServicio:
+          type: string
+          example: ELESUR-1234
+        nombre:
+          type: string
+          example: Luz
+        monto:
+          type: number
+          format: float
+          example: 45.2
+        vencimiento:
+          type: string
+          format: date
+          example: '2026-06-15'
+    PagoServicioRequest:
+      required:
+        - codigoServicio
+        - cuentaOrigen
+        - monto
+      type: object
+      properties:
+        cuentaOrigen:
+          type: string
+          example: '1234567890'
+        codigoServicio:
+          type: string
+        monto:
+          type: number
+          format: float
+    Hipoteca:
+      type: object
+      properties:
+        id:
+          type: string
+          description: ID único de la hipoteca
+          example: HIP-001
+        clienteId:
+          type: string
+          example: 76543210A
+        montoTotal:
+          type: number
+          description: Monto original otorgado
+          format: float
+        balancePendiente:
+          type: number
+          description: Deuda restante a pagar
+          format: float
+        vencimiento:
+          type: string
+          description: Fecha límite del próximo pago o fin del crédito
+          format: date
+        pagoParcial:
+          type: number
+          description: Monto de la cuota periódica
+          format: float
+    CrearHipotecaRequest:
+      required:
+        - clienteId
+        - id
+        - monto
+        - pagoParcial
+        - vencimiento
+      type: object
+      properties:
+        id:
+          type: string
+          example: HIP-001
+        clienteId:
+          type: string
+          example: 76543210A
+        monto:
+          type: number
+          format: float
+          example: 150000
+        vencimiento:
+          type: string
+          format: date
+          example: '2050-01-01'
+        pagoParcial:
+          type: number
+          format: float
+          example: 850.5
+    PagoHipotecaRequest:
+      required:
+        - cuentaOrigen
+        - monto
+      type: object
+      properties:
+        cuentaOrigen:
+          type: string
+          description: Cuenta de donde se debitará el dinero
+          example: '1234567890'
+        monto:
+          type: number
+          description: Monto del pago parcial
+          format: float
+          example: 850.5
+  securitySchemes:
+    default:
+      type: oauth2
+      flows:
+        implicit:
+          authorizationUrl: https://test.com
+          scopes: {}
+x-wso2-auth-header: Authorization
+x-wso2-api-key-header: ApiKey
+x-wso2-cors:
+  corsConfigurationEnabled: false
+  accessControlAllowOrigins:
+    - '*'
+  accessControlAllowCredentials: false
+  accessControlAllowHeaders:
+    - authorization
+    - Access-Control-Allow-Origin
+    - Content-Type
+    - SOAPAction
+    - apikey
+    - Internal-Key
+  accessControlAllowMethods:
+    - GET
+    - PUT
+    - POST
+    - DELETE
+    - PATCH
+    - OPTIONS
+x-wso2-production-endpoints:
+  urls:
+    - http://localhost:9090/api/v1
+  type: http
+x-wso2-sandbox-endpoints:
+  urls:
+    - http://localhost:9090/api/v1
+  type: http
+x-wso2-basePath: /botibankapi/1.2.0
+x-wso2-transports:
+  - http
+  - https
+x-wso2-application-security:
+  security-types:
+    - oauth2
+  optional: false
+x-wso2-response-cache:
+  enabled: false
+  cacheTimeoutInSeconds: 300
