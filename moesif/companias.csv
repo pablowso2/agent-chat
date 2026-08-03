@@ -1,0 +1,3 @@
+user_id,company_id,email,first_name,last_name,title,org
+admin,1000,pablosa@wso2.com,Admin,Admin,Administrador,ArquitecturaWSO2
+pablo,1001,pablosa@wso2.com,Pablo,Saga,Developer,ClienteExterno
