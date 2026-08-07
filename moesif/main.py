@@ -75,17 +75,22 @@ async def receive_moesif_alert(
         print("❌ Intento de acceso no autorizado detectado.")
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid Secret")
 
+    # Capturar la fecha y hora actual para el log
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     # Procesamiento si la seguridad es correcta
-    print("\n" + "="*50)
-    print(f"✅ ACCESO AUTORIZADO - NUEVA ALERTA 🚨")
-    print("="*50)
+    print("\n" + "="*60)
+    print(f"✅ [{current_time}] ACCESO AUTORIZADO - NUEVA ALERTA 🚨")
+    print("="*60)
     
     print("📦 PAYLOAD COMPLETO RECIBIDO EN FORMATO JSON:")
+    print("-" * 60)
     if hasattr(payload, 'model_dump_json'):
         print(payload.model_dump_json(indent=4))
     else:
         print(payload.json(indent=4))
-    print("="*50 + "\n")
+    print("-" * 60)
+    print("="*60 + "\n")
 
     return {
         "status": "success", 
