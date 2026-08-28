@@ -29,3 +29,13 @@ curl -k -X POST 'https://localhost:8243/botibankmcp/1.0/mcp' \
     "method": "tools/list",
     "id": 1
   }'
+
+
+PARA PROBAR BOTI BANK LOCAL
+
+1)Start the backend: bal run main.bal (/botibank/botibankserv)
+2)Start the botibank-ext publicar eventos en agent manager amp-instrument python main.py (agent-chat/botibank)
+
+3)PRobar los MCPs directos: ./test-botibank-mcp.sh 
+
+4)Webhook moesif agent-chat/moesif (python main.py)
