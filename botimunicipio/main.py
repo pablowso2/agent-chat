@@ -1,6 +1,7 @@
 import os
 import asyncio
 
+import httpx
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
@@ -217,6 +218,35 @@ async def chat_endpoint(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
+# 4. PROXY DE LA UI HACIA EL AGENTE DESPLEGADO
+# ==========================================
+# Si AGENT_URL está definido, la UI habla con el agente de la plataforma (vía gateway)
+# en lugar de con el /chat de este proceso. Se hace desde el backend para evitar CORS
+# y no exponer la API key en el navegador.
+AGENT_URL = os.getenv("AGENT_URL", "")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+AGENT_TIMEOUT = float(os.getenv("AGENT_TIMEOUT", "120"))
+
+@app.post("/ui/chat", response_model=ChatResponse)
+async def ui_chat_endpoint(req: ChatRequest):
+    if not AGENT_URL:
+        return await chat_endpoint(req)
+
+    headers = {"Content-Type": "application/json"}
+    if AGENT_API_KEY:
+        headers["x-api-key"] = AGENT_API_KEY
+
+    try:
+        async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
+            r = await client.post(AGENT_URL, headers=headers, json=req.model_dump(exclude_none=True))
+        r.raise_for_status()
+        return ChatResponse(response=r.json().get("response", "[el agente no devolvio respuesta]"))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"El agente remoto respondio {e.response.status_code}: {e.response.text[:300]}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo contactar al agente remoto ({type(e).__name__})")
+
+# ==========================================
 # FRONTEND UI
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
@@ -297,7 +327,7 @@ def get_ui():
             function sendSuggestion(text) { userInput.value = text; sendMessage(); }
             function appendMessage(text, isUser) { const msgDiv = document.createElement("div"); msgDiv.className = `flex gap-3 max-w-[90%] ${isUser ? 'ml-auto flex-row-reverse' : ''}`; const formattedText = text.replace(/\n/g, '<br>'); const avatar = isUser ? `<div class="w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center flex-shrink-0 text-slate-600"><i class="fa-solid fa-user text-xs"></i></div>` : `<div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div>`; const bubbleClass = isUser ? `bg-green-600 text-white rounded-xl rounded-tr-none` : `bg-white border border-slate-200 text-slate-700 rounded-xl rounded-tl-none`; msgDiv.innerHTML = `${avatar}<div class="p-3 text-sm ${bubbleClass} shadow-sm leading-relaxed">${formattedText}</div>`; chatBox.appendChild(msgDiv); chatBox.scrollTop = chatBox.scrollHeight; }
             function showTyping() { const typingId = "typing-" + Date.now(); const msgDiv = document.createElement("div"); msgDiv.id = typingId; msgDiv.className = `flex gap-3 max-w-[90%]`; msgDiv.innerHTML = `<div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div><div class="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none flex items-center shadow-sm"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`; chatBox.appendChild(msgDiv); chatBox.scrollTop = chatBox.scrollHeight; return typingId; }
-            async function sendMessage() { const text = userInput.value.trim(); if (!text) return; appendMessage(text, true); userInput.value = ""; const typingId = showTyping(); try { const res = await fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, message: text }) }); const data = await res.json(); document.getElementById(typingId).remove(); appendMessage(data.response, false); } catch (error) { document.getElementById(typingId).remove(); appendMessage("⚠️ Error de conexión con la API.", false); } }
+            async function sendMessage() { const text = userInput.value.trim(); if (!text) return; appendMessage(text, true); userInput.value = ""; const typingId = showTyping(); try { const res = await fetch("/ui/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, message: text }) }); const data = await res.json(); document.getElementById(typingId).remove(); appendMessage(data.response, false); } catch (error) { document.getElementById(typingId).remove(); appendMessage("⚠️ Error de conexión con la API.", false); } }
         </script>
     </body>
     </html>

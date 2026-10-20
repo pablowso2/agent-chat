@@ -1,0 +1,10 @@
+# Probado para macOS (Apple Silicon) con Python 3.14. También sirve en Linux/Windows.
+# Instalar:  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+
+# Visión
+ultralytics>=8.4            # YOLO (modelos yolo26*)
+torch>=2.9                  # lo trae ultralytics; en Mac usa la GPU vía MPS (YOLO_DEVICE=mps)
+opencv-python>=4.8          # cámara, ventana y JPEG para el LLM
+
+# Voz: en macOS se usa el comando nativo `say`, así que pyttsx3 solo se instala en Windows/Linux
+pyttsx3>=2.90; platform_system != "Darwin"
