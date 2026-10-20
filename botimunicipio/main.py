@@ -1,10 +1,16 @@
 import os
+import ssl
+import warnings
 import traceback
+import httpx
 from dotenv import load_dotenv
 
-# Limpieza de consola
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+# ☢️ BYPASS SSL y Limpieza de consola
+ssl.create_default_context = ssl._create_unverified_context
+ssl._create_default_https_context = ssl._create_unverified_context
+warnings.filterwarnings("ignore")
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
+os.environ["LANGCHAIN_API_KEY"] = ""
 
 load_dotenv()
 
@@ -12,46 +18,76 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
-# 🔴 IMPORTAMOS EL AGENTE DESDE agent.py
-from agent import get_agent
+# LIBRERÍAS LANGCHAIN / LANGGRAPH
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+from langgraph.checkpoint.memory import MemorySaver
 
 app = FastAPI(title="Sede Virtual Municipal")
 
-# Inicializamos el grafo del agente tal como en el ejemplo
-agent_graph = get_agent()
+# Memoria global
+memory = MemorySaver()
+
+# URL leída desde el .env
+MUNICIPAL_SERVER_URL = os.getenv("MUNICIPAL_SERVER_URL", "http://127.0.0.1:8000/mcp")
 
 # ==========================================
-# ENDPOINTS DE FASTAPI
+# HERRAMIENTAS MCP (Descubiertas del servidor vía tools/list)
 # ==========================================
+mcp_client = MultiServerMCPClient({
+    "municipal": {"url": MUNICIPAL_SERVER_URL, "transport": "streamable_http"}
+})
+
+INSTRUCCIONES_AGENTE = (
+    "Eres el Agente Municipal de Atención Ciudadana. Habla SIEMPRE en español.\n"
+    "TIENES HERRAMIENTAS (TOOLS) DISPONIBLES. ESTÁS OBLIGADO a usarlas.\n"
+    "REGLA 1: Si el usuario quiere reportar algo roto (bache, farola, basura), EJECUTA 'registrar_incidencia'.\n"
+    "REGLA 2: Si el usuario quiere un certificado o trámite, EJECUTA 'iniciar_tramite' (si no da el DNI, envíalo como 'SIN_DNI' y pídeselo).\n"
+    "REGLA 3: Si el usuario pregunta horarios o información, EJECUTA 'consultar_informacion'.\n"
+    "REGLA 4 (CRÍTICA): Si el usuario te pide ver la lista de incidencias, sus registros o historial, TIENES QUE EJECUTAR OBLIGATORIAMENTE la herramienta 'ver_registros'. NUNCA digas que no tienes acceso.\n"
+    "REGLA 5: NO inventes excusas ni alucines información."
+)
+
 class ChatRequestSchema(BaseModel):
     session_id: str
     message: str
 
+# ==========================================
+# ENDPOINT PRINCIPAL
+# ==========================================
 @app.post("/chat")
 async def chat(payload: ChatRequestSchema):
-    # Configuramos el hilo de la conversación (thread_id) para la memoria de LangGraph
-    config = {
-        "configurable": {
-            "thread_id": payload.session_id,
-            "session_id": payload.session_id
-        }
-    }
-    
     try:
-        # Ejecutamos el grafo con ainvoke usando el formato de mensajes de LangGraph
-        result = await agent_graph.ainvoke({"messages": [("user", payload.message)]}, config)
+        llm = ChatOpenAI(
+            base_url=os.getenv("LOCAL_LLM_BASE_URL"), 
+            api_key=os.getenv("LOCAL_LLM_API_KEY", "lm-studio"),
+            model=os.getenv("LOCAL_LLM_MODEL"),
+            temperature=0.0
+        )
         
-        # Extraemos la respuesta final generada por el asistente
+        herramientas_api = await mcp_client.get_tools()
+
+        agente = create_react_agent(
+            llm,
+            tools=herramientas_api,
+            checkpointer=memory, 
+            prompt=INSTRUCCIONES_AGENTE # O state_modifier según versión de langgraph
+        )
+        
+        config = {"configurable": {"thread_id": payload.session_id}}
+        result = await agente.ainvoke({"messages": [("user", payload.message)]}, config)
+        
         final_answer = result["messages"][-1].content
-        
         return JSONResponse(content={"response": final_answer})
+        
     except Exception as e:
         print("\n❌ DETALLE DEL ERROR 500:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Agent internal error: {str(e)}")
 
 # ==========================================
-# FRONTEND UI (MUNICIPAL)
+# FRONTEND UI
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 def get_ui():
@@ -79,7 +115,6 @@ def get_ui():
         </style>
     </head>
     <body class="antialiased bg-institutional min-h-screen text-slate-800">
-        
         <nav class="fixed w-full z-40 top-0 bg-white border-b border-slate-200 shadow-sm">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex items-center h-16 gap-3">
@@ -88,44 +123,33 @@ def get_ui():
                 </div>
             </div>
         </nav>
-
         <main class="flex flex-col items-center justify-center min-h-screen pt-16 px-4">
             <div class="text-center max-w-2xl">
                 <h2 class="text-4xl font-bold mb-4">Atención Ciudadana</h2>
-                <p class="text-slate-600 mb-8">Pide certificados, reporta incidencias o consulta horarios con nuestro asistente inteligente.</p>
-                <button onclick="toggleChat()" class="bg-green-600 text-white px-6 py-3 rounded-full font-bold shadow-lg hover:bg-green-700 transition-all">
-                    Abrir Chat Asistente
-                </button>
+                <p class="text-slate-600 mb-8">Pide certificados, reporta incidencias o consulta horarios. Conectado al Backend vía API REST.</p>
+                <button onclick="toggleChat()" class="bg-green-600 text-white px-6 py-3 rounded-full font-bold shadow-lg hover:bg-green-700 transition-all">Abrir Chat Asistente</button>
             </div>
         </main>
-
-        <button id="chat-toggle" onclick="toggleChat()" class="fixed bottom-6 right-6 w-14 h-14 bg-green-600 rounded-full shadow-xl flex items-center justify-center text-white text-xl hover:scale-105 z-50">
-            <i class="fa-solid fa-comment-dots"></i>
-        </button>
-
+        <button id="chat-toggle" onclick="toggleChat()" class="fixed bottom-6 right-6 w-14 h-14 bg-green-600 rounded-full shadow-xl flex items-center justify-center text-white text-xl hover:scale-105 z-50"><i class="fa-solid fa-comment-dots"></i></button>
         <div id="chat-panel" class="fixed bottom-24 right-4 md:right-6 w-[90vw] md:w-[400px] h-[600px] bg-white border border-slate-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden z-50 transform scale-0 origin-bottom-right transition-transform duration-300 pointer-events-none">            
             <div class="bg-slate-900 p-4 flex justify-between items-center text-white">
                 <div class="flex items-center gap-3">
                     <i class="fa-solid fa-robot text-green-400"></i>
-                    <div><h3 class="font-bold text-sm">Agente Municipal</h3></div>
+                    <div><h3 class="font-bold text-sm">Agente Municipal (API REST)</h3></div>
                 </div>
                 <button onclick="toggleChat()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
             </div>
-
             <div id="chat-box" class="flex-1 p-4 overflow-y-auto flex flex-col gap-4 bg-slate-50">
                 <div class="flex gap-3 max-w-[90%]">
                     <div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div>
-                    <div class="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none text-sm text-slate-700 shadow-sm">
-                        ¡Hola! Soy el asistente virtual. ¿En qué te puedo ayudar hoy?
-                    </div>
+                    <div class="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none text-sm text-slate-700 shadow-sm">¡Hola! Soy el asistente virtual. ¿En qué te puedo ayudar hoy?</div>
                 </div>
             </div>
-
             <div class="p-4 bg-white border-t border-slate-200">
                 <div class="flex gap-2 mb-3 overflow-x-auto pb-2 scrollbar-hide">
-                    <button onclick="sendSuggestion('Farola rota')" class="whitespace-nowrap px-3 py-1.5 text-xs bg-slate-100 hover:bg-green-50 rounded-full">🚧 Incidencia</button>
+                    <button onclick="sendSuggestion('Farola rota en calle Sol')" class="whitespace-nowrap px-3 py-1.5 text-xs bg-slate-100 hover:bg-green-50 rounded-full">🚧 Incidencia</button>
                     <button onclick="sendSuggestion('Necesito el padrón')" class="whitespace-nowrap px-3 py-1.5 text-xs bg-slate-100 hover:bg-green-50 rounded-full">📄 Trámite</button>
-                    <button onclick="sendSuggestion('Horario piscina')" class="whitespace-nowrap px-3 py-1.5 text-xs bg-slate-100 hover:bg-green-50 rounded-full">ℹ️ Información</button>
+                    <button onclick="sendSuggestion('Ver mis registros')" class="whitespace-nowrap px-3 py-1.5 text-xs bg-slate-100 hover:bg-green-50 rounded-full">📋 Historial</button>
                 </div>
                 <div class="relative flex items-center">
                     <input id="user-input" type="text" placeholder="Escribe tu consulta..." class="w-full bg-slate-100 border-none focus:ring-2 focus:ring-green-500 rounded-lg pl-3 pr-10 py-2.5 text-sm" onkeypress="if(event.key === 'Enter') sendMessage()">
@@ -133,69 +157,17 @@ def get_ui():
                 </div>
             </div>
         </div>
-
         <script>
             const sessionId = "sesion-" + Math.random().toString(36).substr(2, 9);
             const chatPanel = document.getElementById("chat-panel");
             const chatBox = document.getElementById("chat-box");
             const userInput = document.getElementById("user-input");
             let chatOpen = false;
-
-            function toggleChat() {
-                chatOpen = !chatOpen;
-                if(chatOpen) {
-                    chatPanel.classList.remove("scale-0", "pointer-events-none");
-                    chatPanel.classList.add("scale-100", "pointer-events-auto");
-                    userInput.focus();
-                } else {
-                    chatPanel.classList.remove("scale-100", "pointer-events-auto");
-                    chatPanel.classList.add("scale-0", "pointer-events-none");
-                }
-            }
-
+            function toggleChat() { chatOpen = !chatOpen; if(chatOpen) { chatPanel.classList.remove("scale-0", "pointer-events-none"); chatPanel.classList.add("scale-100", "pointer-events-auto"); userInput.focus(); } else { chatPanel.classList.remove("scale-100", "pointer-events-auto"); chatPanel.classList.add("scale-0", "pointer-events-none"); } }
             function sendSuggestion(text) { userInput.value = text; sendMessage(); }
-
-            function appendMessage(text, isUser) {
-                const msgDiv = document.createElement("div");
-                msgDiv.className = `flex gap-3 max-w-[90%] ${isUser ? 'ml-auto flex-row-reverse' : ''}`;
-                const avatar = isUser ? `<div class="w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center flex-shrink-0 text-slate-600"><i class="fa-solid fa-user text-xs"></i></div>` : `<div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div>`;
-                const bubbleClass = isUser ? `bg-green-600 text-white rounded-xl rounded-tr-none` : `bg-white border border-slate-200 text-slate-700 rounded-xl rounded-tl-none`;
-                msgDiv.innerHTML = `${avatar}<div class="p-3 text-sm ${bubbleClass} shadow-sm">${text}</div>`;
-                chatBox.appendChild(msgDiv);
-                chatBox.scrollTop = chatBox.scrollHeight;
-            }
-
-            function showTyping() {
-                const typingId = "typing-" + Date.now();
-                const msgDiv = document.createElement("div");
-                msgDiv.id = typingId;
-                msgDiv.className = `flex gap-3 max-w-[90%]`;
-                msgDiv.innerHTML = `<div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div><div class="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none flex items-center shadow-sm"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
-                chatBox.appendChild(msgDiv);
-                chatBox.scrollTop = chatBox.scrollHeight;
-                return typingId;
-            }
-
-            async function sendMessage() {
-                const text = userInput.value.trim();
-                if (!text) return;
-                appendMessage(text, true);
-                userInput.value = "";
-                const typingId = showTyping();
-
-                try {
-                    const res = await fetch("/chat", {
-                        method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ session_id: sessionId, message: text })
-                    });
-                    const data = await res.json();
-                    document.getElementById(typingId).remove();
-                    appendMessage(data.response, false);
-                } catch (error) {
-                    document.getElementById(typingId).remove();
-                    appendMessage("⚠️ Error de conexión.", false);
-                }
-            }
+            function appendMessage(text, isUser) { const msgDiv = document.createElement("div"); msgDiv.className = `flex gap-3 max-w-[90%] ${isUser ? 'ml-auto flex-row-reverse' : ''}`; const formattedText = text.replace(/\n/g, '<br>'); const avatar = isUser ? `<div class="w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center flex-shrink-0 text-slate-600"><i class="fa-solid fa-user text-xs"></i></div>` : `<div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div>`; const bubbleClass = isUser ? `bg-green-600 text-white rounded-xl rounded-tr-none` : `bg-white border border-slate-200 text-slate-700 rounded-xl rounded-tl-none`; msgDiv.innerHTML = `${avatar}<div class="p-3 text-sm ${bubbleClass} shadow-sm leading-relaxed">${formattedText}</div>`; chatBox.appendChild(msgDiv); chatBox.scrollTop = chatBox.scrollHeight; }
+            function showTyping() { const typingId = "typing-" + Date.now(); const msgDiv = document.createElement("div"); msgDiv.id = typingId; msgDiv.className = `flex gap-3 max-w-[90%]`; msgDiv.innerHTML = `<div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center flex-shrink-0 text-white"><i class="fa-solid fa-robot text-xs"></i></div><div class="bg-white border border-slate-200 p-3 rounded-xl rounded-tl-none flex items-center shadow-sm"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`; chatBox.appendChild(msgDiv); chatBox.scrollTop = chatBox.scrollHeight; return typingId; }
+            async function sendMessage() { const text = userInput.value.trim(); if (!text) return; appendMessage(text, true); userInput.value = ""; const typingId = showTyping(); try { const res = await fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, message: text }) }); const data = await res.json(); document.getElementById(typingId).remove(); appendMessage(data.response, false); } catch (error) { document.getElementById(typingId).remove(); appendMessage("⚠️ Error de conexión con la API.", false); } }
         </script>
     </body>
     </html>
