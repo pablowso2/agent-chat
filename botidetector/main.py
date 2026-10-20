@@ -1,9 +1,10 @@
 """
 main.py — Agente de visión: cámara + YOLO + LLM local (qwen3-vl-2b-it) + voz.
 
-YOLO detecta objetos en vivo y los anuncia en voz alta. Además podés hacerle
-preguntas al LLM, que recibe el frame actual + las detecciones de YOLO, así que
-también describe la escena y lee texto (carteles, etiquetas, pantallas).
+YOLO detecta objetos y manos levantadas, MediaPipe detecta la cara (cabeza,
+ojos, pestañeos, boca) y qué dedos mostrás; todo se anuncia en voz alta. Además
+podés hacerle preguntas al LLM, que recibe el frame actual + lo detectado, así
+que también describe la escena y lee texto (carteles, etiquetas, pantallas).
 
 Toda la configuración está en .env:
     LOCAL_LLM_BASE_URL=https://macos.tailcc45b1.ts.net/v1
@@ -13,12 +14,14 @@ Si LOCAL_LLM_BASE_URL está vacío, funciona solo con YOLO + voz.
 
 Uso:  python main.py
 En la ventana:   q salir · espacio repetir · d describir/leer escena · m silenciar
+                 c recalibrar la posición neutra de la cabeza (mirando al frente)
 En la terminal:  escribí una pregunta y Enter (p. ej. "¿qué dice el cartel?")
 """
 from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import platform
 import queue
@@ -70,6 +73,15 @@ YOLO_CONF = float(env("YOLO_CONF", "0.45"))
 YOLO_DEVICE = env("YOLO_DEVICE")              # vacío = automático
 STABLE_FRAMES = int(env("STABLE_FRAMES", "8"))
 ANNOUNCE_COOLDOWN = float(env("ANNOUNCE_COOLDOWN", "3.0"))
+POSE = env("POSE", "true").lower() in ("1", "true", "si", "sí", "yes")
+POSE_MODEL = env("POSE_MODEL", "yolo26n-pose.pt")
+FACE = env("FACE", "true").lower() in ("1", "true", "si", "sí", "yes")
+FACE_EXPRESSIONS = env("FACE_EXPRESSIONS", "true").lower() in ("1", "true", "si", "sí", "yes")
+FINGERS = env("FINGERS", "true").lower() in ("1", "true", "si", "sí", "yes")
+HEAD_TURN_DEG = float(env("HEAD_TURN_DEG", "20"))
+HEAD_TILT_DEG = float(env("HEAD_TILT_DEG", "15"))
+EYES_CLOSED_SECONDS = float(env("EYES_CLOSED_SECONDS", "1.0"))
+DOUBLE_BLINK = env("DOUBLE_BLINK", "decir").lower()  # decir | describir | nada
 VOICE = env("VOICE", "Paulina")
 
 LLM_BASE_URL = env("LOCAL_LLM_BASE_URL").rstrip("/")
@@ -162,6 +174,312 @@ def describe_detections(r) -> str:
         vert = "arriba" if cy < 0.33 else "abajo" if cy > 0.66 else "medio"
         lines.append(f"- {r.names[int(c)]} (conf {float(p):.2f}) en {horiz}/{vert}")
     return "\n".join(lines) or "(YOLO no detectó objetos)"
+
+
+# --- Pose: manos levantadas -----------------------------------------------------
+# Índices de los 17 keypoints COCO. Izquierda/derecha son del cuerpo de la
+# persona (su mano derecha), no del lado de la imagen.
+NOSE = 0
+ARMS = {"derecha": (6, 8, 10), "izquierda": (5, 7, 9)}  # (hombro, codo, muñeca)
+KP_CONF = float(env("POSE_KP_CONF", "0.3"))  # con la cámara cerca, hombros y muñecas salen con poca confianza
+POSE_DEBUG = env("POSE_DEBUG").lower() in ("1", "true", "si", "sí", "yes")
+
+
+def arms_up(xy: list, cf: list) -> dict[str, bool]:
+    """Un brazo está levantado si la muñeca o el codo quedan claramente por encima
+    del hombro. Si no se ve el hombro (cámara muy cerca), se compara con la nariz."""
+    (rs, _, _), (ls, _, _) = ARMS["derecha"], ARMS["izquierda"]
+    shoulders_ok = cf[rs] >= KP_CONF and cf[ls] >= KP_CONF
+    # margen proporcional al ancho de hombros: tolera la mano a la altura del hombro
+    margin = 0.15 * abs(xy[rs][0] - xy[ls][0]) if shoulders_ok else 0
+    out = {}
+    for side, (sh, el, wr) in ARMS.items():
+        if cf[sh] >= KP_CONF:
+            ref = xy[sh][1] - margin
+        elif cf[NOSE] >= KP_CONF:
+            ref = xy[NOSE][1]
+        else:
+            out[side] = False
+            continue
+        out[side] = any(cf[k] >= KP_CONF and xy[k][1] < ref for k in (wr, el))
+    return out
+
+
+def raised_hands(p) -> list[str]:
+    """Por persona: 'derecha', 'izquierda', 'ambas' o ''."""
+    if p.keypoints is None or p.keypoints.conf is None:
+        return []
+    states = []
+    for xy, cf in zip(p.keypoints.xy.tolist(), p.keypoints.conf.tolist()):
+        up = arms_up(xy, cf)
+        if POSE_DEBUG:
+            print("pose " + " · ".join(
+                f"{side}: hombro {cf[sh]:.2f}@{xy[sh][1]:.0f} codo {cf[el]:.2f}@{xy[el][1]:.0f} "
+                f"muñeca {cf[wr]:.2f}@{xy[wr][1]:.0f} -> {'ARRIBA' if up[side] else '-'}"
+                for side, (sh, el, wr) in ARMS.items()) + f" · nariz {cf[NOSE]:.2f}@{xy[NOSE][1]:.0f}")
+        r, l = up["derecha"], up["izquierda"]
+        states.append("ambas" if r and l else "derecha" if r else "izquierda" if l else "")
+    return states
+
+
+def draw_arms(frame, p) -> None:
+    """Dibuja solo hombros y brazos (verde = levantado), sin las líneas de la cara."""
+    if p.keypoints is None or p.keypoints.conf is None:
+        return
+    for xy, cf in zip(p.keypoints.xy.tolist(), p.keypoints.conf.tolist()):
+        up = arms_up(xy, cf)
+        pt = lambda k: (int(xy[k][0]), int(xy[k][1]))
+        rs, ls = ARMS["derecha"][0], ARMS["izquierda"][0]
+        if cf[rs] >= KP_CONF and cf[ls] >= KP_CONF:
+            cv2.line(frame, pt(rs), pt(ls), (200, 200, 200), 2)
+        for side, chain in ARMS.items():
+            color = (0, 255, 0) if up[side] else (200, 200, 200)
+            seen = [k for k in chain if cf[k] >= KP_CONF]
+            for a, b in zip(seen, seen[1:]):
+                cv2.line(frame, pt(a), pt(b), color, 3)
+            for k in seen:
+                cv2.circle(frame, pt(k), 5, color, -1)
+
+
+def hands_phrase(states: list[str]) -> str:
+    up = [s for s in states if s]
+    if not up:
+        return ""
+    if len(up) > 1:
+        return f"{NUM.get(len(up), len(up))} personas levantaron la mano.".capitalize()
+    hand = "las dos manos" if up[0] == "ambas" else f"la mano {up[0]}"
+    return f"Levantaste {hand}." if len(states) == 1 else f"Una persona levantó {hand}."
+
+
+class Stable:
+    """Un valor que cambió y se mantuvo en ≥75% de los últimos N frames (tolera parpadeos)."""
+
+    def __init__(self, n: int = STABLE_FRAMES, initial=None):
+        self.window: deque = deque(maxlen=n)
+        self.value = initial
+
+    def update(self, v) -> bool:
+        self.window.append(v)
+        top, c = Counter(self.window).most_common(1)[0]
+        if len(self.window) == self.window.maxlen and c >= 0.75 * self.window.maxlen \
+                and top != self.value:
+            self.value = top
+            return True
+        return False
+
+
+# --- MediaPipe: cara (cabeza, ojos, boca) y dedos -------------------------------
+MP_MODELS = {
+    "face": "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+            "face_landmarker/float16/latest/face_landmarker.task",
+    "hand": "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+            "hand_landmarker/float16/latest/hand_landmarker.task",
+}
+MODELS_DIR = Path(__file__).with_name("models")
+
+
+def mp_model(name: str) -> str:
+    """Ruta al modelo .task de MediaPipe; lo descarga la primera vez."""
+    path = MODELS_DIR / f"{name}_landmarker.task"
+    if not path.exists():
+        MODELS_DIR.mkdir(exist_ok=True)
+        print(f"Descargando {path.name}…")
+        tmp = path.with_suffix(".part")
+        urllib.request.urlretrieve(MP_MODELS[name], tmp)
+        tmp.rename(path)
+    return str(path)
+
+
+# Dedos: 21 puntos por mano (0 = muñeca). Un dedo está extendido si su punta queda
+# bastante más lejos de la muñeca que su articulación media (en 3D, así no depende
+# del ángulo de la mano). Umbrales medidos con fotos de pulgar arriba, V e índice.
+FINGERS_ES = ["el pulgar", "el índice", "el dedo medio", "el anular", "el meñique"]
+FINGER_JOINTS = [(6, 8), (10, 12), (14, 16), (18, 20)]  # (articulación media, punta)
+FINGERTIPS = [4, 8, 12, 16, 20]
+
+
+def fingers_up(world) -> list[bool]:
+    d = lambda a, b: math.dist((world[a].x, world[a].y, world[a].z),
+                               (world[b].x, world[b].y, world[b].z))
+    # pulgar: su punta se aleja de la base del meñique y del medio
+    thumb = (d(4, 17) / d(2, 17) + d(4, 9) / d(2, 9)) / 2 > 1.35
+    return [thumb] + [d(0, tip) / d(0, pip) > 1.2 for pip, tip in FINGER_JOINTS]
+
+
+def join_es(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " y " + items[-1]
+
+
+def hand_desc(up: list[bool], lm) -> str:
+    n = sum(up)
+    if n == 0:
+        return "el puño cerrado"
+    if n == 5:
+        return "la mano abierta"
+    if up == [True, False, False, False, False]:  # pulgar solo: ¿arriba o abajo?
+        if lm[4].y < lm[2].y and lm[4].y < lm[0].y:
+            return "el pulgar arriba"
+        if lm[4].y > lm[2].y and lm[4].y > lm[0].y:
+            return "el pulgar abajo"
+    names = [f for f, u in zip(FINGERS_ES, up) if u]
+    return join_es(names) if n == 1 else f"{NUM[n]} dedos: {join_es(names)}"
+
+
+def fingers_phrase(res) -> str:
+    hands = []
+    for lm, world, handed in zip(res.hand_landmarks, res.hand_world_landmarks, res.handedness):
+        # MediaPipe asume imagen espejada (selfie); la cámara no lo está, así que se invierte
+        side = "izquierda" if handed[0].category_name == "Right" else "derecha"
+        hands.append((side, hand_desc(fingers_up(world), lm)))
+    if not hands:
+        return ""
+    if len(hands) == 1:
+        return f"Mostrás {hands[0][1]}."
+    hands.sort()  # derecha primero
+    return f"Mostrás {hands[0][1]} con la mano derecha y {hands[1][1]} con la izquierda."
+
+
+def draw_hands(frame, res) -> None:
+    """Puntas de los dedos: verde = extendido, gris = doblado."""
+    h, w = frame.shape[:2]
+    for lm, world in zip(res.hand_landmarks, res.hand_world_landmarks):
+        for tip, up in zip(FINGERTIPS, fingers_up(world)):
+            cv2.circle(frame, (int(lm[tip].x * w), int(lm[tip].y * h)), 7,
+                       (0, 255, 0) if up else (160, 160, 160), -1)
+
+
+def head_angles(matrix) -> tuple[float, float, float]:
+    """(yaw, pitch, roll) en grados desde la matriz de MediaPipe. Signos verificados:
+    yaw > 0 = gira a SU izquierda, pitch > 0 = mira abajo, roll > 0 = inclina a SU derecha."""
+    m = [list(row) for row in matrix]
+    yaw = math.degrees(math.asin(max(-1.0, min(1.0, -m[2][0]))))
+    pitch = math.degrees(math.atan2(m[2][1], m[2][2]))
+    roll = math.degrees(math.atan2(m[1][0], m[0][0]))
+    return yaw, pitch, roll
+
+
+def oscillates(values: list[float], amp: float) -> bool:
+    """¿Fue y vino al menos dos veces (ida-vuelta-ida) con amplitud ≥ amp?"""
+    if len(values) < 6 or max(values) - min(values) < amp:
+        return False
+    mid = (max(values) + min(values)) / 2
+    sides = []
+    for v in values:
+        if abs(v - mid) > amp / 3:
+            s = v > mid
+            if not sides or sides[-1] != s:
+                sides.append(s)
+    return len(sides) >= 3
+
+
+HEAD_PHRASES = {
+    "izquierda": "Giraste la cabeza a la izquierda.", "derecha": "Giraste la cabeza a la derecha.",
+    "arriba": "Miraste hacia arriba.", "abajo": "Miraste hacia abajo.",
+    "incl_izq": "Inclinaste la cabeza a la izquierda.", "incl_der": "Inclinaste la cabeza a la derecha.",
+}
+HEAD_SHORT = {"": "al frente", "izquierda": "izquierda", "derecha": "derecha", "arriba": "arriba",
+              "abajo": "abajo", "incl_izq": "inclinada izq", "incl_der": "inclinada der"}
+EYE_CLOSED = 0.5  # score de eyeBlink a partir del cual el ojo está cerrado
+
+
+class FaceTracker:
+    """Convierte cada resultado de MediaPipe en eventos ('Pestañeaste dos veces'…)."""
+
+    def __init__(self):
+        self.recalibrate()
+        self.head = Stable(initial="")
+        self.wink = Stable(n=5, initial="")
+        self.expr = Stable(initial="")
+        self.motion: deque[tuple[float, float, float]] = deque()  # (t, yaw, pitch)
+        self.last_nod = 0.0
+        self.closed_since: float | None = None
+        self.closed_said = False
+        self.blink_times: deque[float] = deque(maxlen=2)
+        self.blinks = 0
+        self.summary = ""
+
+    def recalibrate(self) -> None:
+        """La posición neutra se toma de los primeros frames con cara (mirando al frente)."""
+        self.base: tuple[float, float, float] | None = None
+        self.calib: list[tuple[float, float, float]] = []
+
+    def update(self, res, now: float) -> list[str]:
+        if not res.face_landmarks:
+            self.closed_since, self.closed_said, self.summary = None, False, ""
+            return []
+        events: list[str] = []
+        bs = {c.category_name: c.score for c in res.face_blendshapes[0]}
+        raw = head_angles(res.facial_transformation_matrixes[0])
+
+        if self.base is None:
+            self.calib.append(raw)
+            if len(self.calib) < 15:
+                self.summary = "Cara: calibrando, mira al frente"
+                return []
+            self.base = tuple(sorted(v)[len(v) // 2] for v in zip(*self.calib))  # mediana
+        yaw, pitch, roll = (r - b for r, b in zip(raw, self.base))
+
+        # Asentir (sí) / negar (no): ida y vuelta en el último segundo y medio
+        self.motion.append((now, yaw, pitch))
+        while self.motion and now - self.motion[0][0] > 1.5:
+            self.motion.popleft()
+        if now - self.last_nod > 2.0:
+            yaws = [m[1] for m in self.motion]
+            pitches = [m[2] for m in self.motion]
+            gesture = ("Dijiste que no con la cabeza." if oscillates(yaws, 12) else
+                       "Dijiste que sí con la cabeza." if oscillates(pitches, 8) else "")
+            if gesture:
+                events.append(gesture)
+                self.last_nod = now
+                self.motion.clear()
+
+        # Dirección de la cabeza
+        if abs(yaw) > HEAD_TURN_DEG:
+            head = "izquierda" if yaw > 0 else "derecha"
+        elif abs(pitch) > HEAD_TILT_DEG:
+            head = "abajo" if pitch > 0 else "arriba"
+        elif abs(roll) > HEAD_TILT_DEG:
+            head = "incl_der" if roll > 0 else "incl_izq"
+        else:
+            head = ""
+        if self.head.update(head) and head and now - self.last_nod > 1.0:
+            events.append(HEAD_PHRASES[head])
+
+        # Ojos (eyeBlinkLeft = ojo izquierdo de la persona)
+        left, right = bs.get("eyeBlinkLeft", 0), bs.get("eyeBlinkRight", 0)
+        both_closed = left > EYE_CLOSED and right > EYE_CLOSED
+        if both_closed:
+            if self.closed_since is None:
+                self.closed_since = now
+            elif now - self.closed_since >= EYES_CLOSED_SECONDS and not self.closed_said:
+                events.append("Cerraste los ojos.")
+                self.closed_said = True
+        elif self.closed_since is not None:
+            if self.closed_said:
+                events.append("Abriste los ojos.")
+            elif now - self.closed_since < 0.5:  # cierre corto = pestañeo
+                self.blinks += 1
+                self.blink_times.append(now)
+                if len(self.blink_times) == 2 and self.blink_times[1] - self.blink_times[0] < 0.7:
+                    events.append("DOBLE_PESTAÑEO")
+                    self.blink_times.clear()
+            self.closed_since, self.closed_said = None, False
+
+        wink = ("derecho" if right > EYE_CLOSED and left < 0.3 else
+                "izquierdo" if left > EYE_CLOSED and right < 0.3 else "")
+        if self.wink.update(wink) and wink:
+            events.append(f"Guiñaste el ojo {wink}.")
+
+        if FACE_EXPRESSIONS:
+            smile = (bs.get("mouthSmileLeft", 0) + bs.get("mouthSmileRight", 0)) / 2
+            expr = "sonrisa" if smile > 0.6 else "boca" if bs.get("jawOpen", 0) > 0.6 else ""
+            if self.expr.update(expr) and expr:
+                events.append("Estás sonriendo." if expr == "sonrisa" else "Abriste la boca.")
+
+        eyes = "cerrados" if both_closed else "abiertos"
+        self.summary = (f"Cabeza: {HEAD_SHORT[head]} | ojos {eyes} | pestaneos: {self.blinks}"
+                        f" (yaw {yaw:+.0f} pitch {pitch:+.0f} roll {roll:+.0f})")
+        return events
 
 
 # --- Voz: hilo dedicado para no bloquear el video -----------------------------
@@ -343,6 +661,7 @@ def stdin_reader(questions: queue.Queue, stop: threading.Event) -> None:
 # --- Bucle principal ----------------------------------------------------------
 def main() -> None:
     yolo = YOLO(YOLO_MODEL)  # descarga los pesos la primera vez
+    pose = YOLO(POSE_MODEL) if POSE else None
     device = YOLO_DEVICE or None
     if not device:  # Ultralytics no elige MPS solo: en Mac Apple Silicon lo pedimos
         import torch
@@ -375,32 +694,102 @@ def main() -> None:
     else:
         print("LLM desactivado (LOCAL_LLM_BASE_URL vacío): solo YOLO + voz.")
 
+    face_lm = hand_lm = None
+    if FACE or FINGERS:
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+        video = vision.RunningMode.VIDEO
+        if FACE:
+            face_lm = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=mp_model("face")), running_mode=video,
+                output_face_blendshapes=True, output_facial_transformation_matrixes=True))
+        if FINGERS:
+            hand_lm = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=mp_model("hand")), running_mode=video,
+                num_hands=2))
+    face = FaceTracker()
+    fingers = Stable(initial="")
+    last_ts = 0
+
     window: deque[tuple] = deque(maxlen=STABLE_FRAMES)
     last_said: tuple | None = None
     last_time = 0.0
-    title = "Detector (q salir, espacio repetir, d describir, m silenciar)"
+    raised = Stable(initial=())
+    title = "Detector (q salir, espacio repetir, d describir, m silenciar, c calibrar)"
 
     speaker.say("Cámara activada.")
-    print(f"YOLO: {YOLO_MODEL} en {device or 'auto'}")
+    extras = [m for m, on in ((POSE_MODEL, pose), ("cara", face_lm), ("dedos", hand_lm)) if on]
+    print(f"YOLO: {YOLO_MODEL} en {device or 'auto'}" + (f" + {', '.join(extras)}" if extras else ""))
     # stream=True devuelve un generador: no acumula frames en memoria
     for r in yolo.predict(source=CAMERA, conf=YOLO_CONF, device=device,
                           stream=True, verbose=False):
+        now = time.time()
         counts = Counter(r.names[int(c)] for c in r.boxes.cls)
-        latest.set(r.orig_img, describe_detections(r))
+        hands, hands_text, p = [], "", None
+        if pose:
+            p = pose.predict(r.orig_img, conf=YOLO_CONF, device=device, verbose=False)[0]
+            hands = raised_hands(p)
+            hands_text = hands_phrase(hands)
+
+        face_events, fingers_text, hres = [], "", None
+        if face_lm or hand_lm:
+            image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                             data=cv2.cvtColor(r.orig_img, cv2.COLOR_BGR2RGB))
+            last_ts = max(int(time.monotonic() * 1000), last_ts + 1)  # VIDEO exige ts crecientes
+            if face_lm:
+                face_events = face.update(face_lm.detect_for_video(image, last_ts), now)
+            if hand_lm:
+                hres = hand_lm.detect_for_video(image, last_ts)
+                fingers_text = fingers_phrase(hres)
+
+        dets = describe_detections(r)
+        for label, text in (("pose", hands_text), ("cara", face.summary if face_lm else ""),
+                            ("dedos", fingers_text)):
+            if text:
+                dets += f"\n- {label}: {text}"
+        latest.set(r.orig_img, dets)
         window.append(tuple(sorted(counts.items())))
+
+        # Gestos: se dicen al aparecer (no mientras se mantienen)
+        if not busy.is_set():
+            for ev in face_events:
+                if ev == "DOBLE_PESTAÑEO":
+                    if DOUBLE_BLINK == "describir" and llm_on:
+                        questions.put(DESCRIBE)
+                    elif DOUBLE_BLINK != "nada":
+                        speaker.say("Pestañeaste dos veces.")
+                else:
+                    speaker.say(ev)
+            if fingers.update(fingers_text) and fingers_text:
+                speaker.say(fingers_text)
 
         # Escena estable = la misma composición en ≥75% de la ventana (tolera parpadeos)
         key, n = Counter(window).most_common(1)[0]
         stable = len(window) == window.maxlen and n >= 0.75 * window.maxlen
-        now = time.time()
         if stable and key != last_said and now - last_time > ANNOUNCE_COOLDOWN and not busy.is_set():
             speaker.say(to_phrase(dict(key)))
             last_said, last_time = key, now
 
+        # Manos: se anuncia al levantarlas; al bajarlas se rearma en silencio
+        if pose and raised.update(tuple(sorted(h for h in hands if h))) \
+                and raised.value and not busy.is_set():
+            speaker.say(hands_phrase(list(raised.value)))
+
         frame = r.plot()
-        status = "pensando..." if busy.is_set() else to_phrase(counts)
-        cv2.putText(frame, ascii_only(status), (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        if p is not None:  # brazos encima de las cajas de objetos
+            draw_arms(frame, p)
+        if hres is not None:
+            draw_hands(frame, hres)
+        lines = [("pensando..." if busy.is_set() else to_phrase(counts), (0, 255, 0)),
+                 (hands_text, (0, 200, 255)),
+                 (face.summary if face_lm else "", (255, 200, 0)),
+                 (fingers_text, (255, 0, 255))]
+        y = 30
+        for text, color in lines:
+            if text:
+                cv2.putText(frame, ascii_only(text), (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                y += 28
         cv2.imshow(title, frame)
 
         k = cv2.waitKey(1) & 0xFF
@@ -413,6 +802,9 @@ def main() -> None:
                 questions.put(DESCRIBE)
             else:
                 print("LLM desactivado: configurá LOCAL_LLM_BASE_URL en .env para usar 'd'.")
+        if k == ord("c") and face_lm:
+            face.recalibrate()
+            speaker.say("Mirá al frente, calibrando.", important=True)
         if k == ord("m"):
             speaker.toggle_mute()
             print("🔇 silenciado" if speaker.muted else "🔊 activo")
