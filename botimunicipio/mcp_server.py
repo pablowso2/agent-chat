@@ -1,16 +1,21 @@
 import os
 import json
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-# Hosts públicos extra (túneles, gateway) separados por comas, p.ej. "mw98grj3-8000.uks1.devtunnels.ms"
-HOSTS_EXTRA = [h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", "mw98grj3-8000.uks1.devtunnels.ms").split(",") if h.strip()]
+load_dotenv()
 
-# Servidor MCP real (JSON-RPC 2.0 sobre Streamable HTTP) expuesto en http://127.0.0.1:8000/mcp
+MCP_PORT = int(os.getenv("MCP_PORT", 8000))
+
+# Hosts públicos extra (túneles, gateway) separados por comas, p.ej. "mw98grj3-7000.uks1.devtunnels.ms"
+HOSTS_EXTRA = [h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", f"mw98grj3-{MCP_PORT}.uks1.devtunnels.ms").split(",") if h.strip()]
+
+# Servidor MCP real (JSON-RPC 2.0 sobre Streamable HTTP) expuesto en http://127.0.0.1:<MCP_PORT>/mcp
 mcp = FastMCP(
     "API Municipal (Backend de Herramientas)",
     host="127.0.0.1",
-    port=8000,
+    port=MCP_PORT,
     streamable_http_path="/mcp",
     stateless_http=True,
     json_response=True,
@@ -71,5 +76,5 @@ def ver_registros() -> str:
     return f"RESULTADO REGISTROS: {json.dumps(resumen, ensure_ascii=False)}"
 
 if __name__ == "__main__":
-    print("🚀 Arrancando Servidor MCP (Streamable HTTP) en http://127.0.0.1:8000/mcp")
+    print(f"🚀 Arrancando Servidor MCP (Streamable HTTP) en http://127.0.0.1:{MCP_PORT}/mcp")
     mcp.run(transport="streamable-http")

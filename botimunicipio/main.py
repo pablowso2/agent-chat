@@ -1,90 +1,220 @@
 import os
-import ssl
-import warnings
-import traceback
-import httpx
+import asyncio
+
 from dotenv import load_dotenv
 
-# ☢️ BYPASS SSL y Limpieza de consola
-ssl.create_default_context = ssl._create_unverified_context
-ssl._create_default_https_context = ssl._create_unverified_context
-warnings.filterwarnings("ignore")
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
-os.environ["LANGCHAIN_API_KEY"] = ""
-
-load_dotenv()
-
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
 
-# LIBRERÍAS LANGCHAIN / LANGGRAPH
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import ToolException
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.graph import StateGraph, START, END, MessagesState
+from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
-app = FastAPI(title="Sede Virtual Municipal")
+# ---------------------------------------------------------
+# Cargar variables de entorno desde el archivo .env
+# ---------------------------------------------------------
+load_dotenv()
 
-# Memoria global
-memory = MemorySaver()
-
-# URL leída desde el .env
+# ==========================================
+# 1. HERRAMIENTAS MCP (servidor municipal)
+# ==========================================
+# Las tools viven en mcp_server.py y se descubren vía tools/list.
 MUNICIPAL_SERVER_URL = os.getenv("MUNICIPAL_SERVER_URL", "http://127.0.0.1:8000/mcp")
+# Si el MCP server se consume a través del gateway (WSO2 API Manager), la API key va en este header
+MUNICIPAL_SERVER_API_KEY = os.getenv("MUNICIPAL_SERVER_API_KEY", "")
+MUNICIPAL_SERVER_API_KEY_HEADER = os.getenv("MUNICIPAL_SERVER_API_KEY_HEADER", "apikey")
+# Segundos máximos por request al MCP server (los túneles a veces se cuelgan ~100s antes de dar 504)
+MUNICIPAL_SERVER_TIMEOUT = float(os.getenv("MUNICIPAL_SERVER_TIMEOUT", "20"))
+# Reintentos por llamada fallida. Ojo: si el primer intento sí llegó al servidor, una
+# operación como registrar_incidencia puede quedar duplicada.
+MUNICIPAL_SERVER_RETRIES = int(os.getenv("MUNICIPAL_SERVER_RETRIES", "1"))
+
+def _conexion_mcp() -> dict:
+    conexion = {"url": MUNICIPAL_SERVER_URL, "transport": "streamable_http",
+                "timeout": MUNICIPAL_SERVER_TIMEOUT}
+    if MUNICIPAL_SERVER_API_KEY:
+        conexion["headers"] = {MUNICIPAL_SERVER_API_KEY_HEADER: MUNICIPAL_SERVER_API_KEY}
+    return conexion
+
+mcp_client = MultiServerMCPClient({"municipal": _conexion_mcp()})
+
+def _con_limite(tool):
+    """Pone un tiempo máximo a cada llamada MCP y reintenta si falla.
+
+    El timeout de httpx no alcanza: si el túnel se cuelga, la sesión MCP se queda
+    esperando para siempre. Si se agotan los intentos, la ToolException vuelve al
+    modelo como ToolMessage (handle_tool_errors) y el bot responde en vez de dar 500.
+    """
+    original = tool.coroutine
+
+    async def envuelta(*args, **kwargs):
+        ultimo_error = None
+        for _ in range(MUNICIPAL_SERVER_RETRIES + 1):
+            try:
+                return await asyncio.wait_for(original(*args, **kwargs), MUNICIPAL_SERVER_TIMEOUT)
+            except Exception as e:
+                ultimo_error = e
+        raise ToolException(
+            f"El servidor municipal no respondió ({type(ultimo_error).__name__}). "
+            "Dile al usuario que hay un problema técnico y que lo intente de nuevo en unos minutos."
+        )
+
+    tool.coroutine = envuelta
+    return tool
 
 # ==========================================
-# HERRAMIENTAS MCP (Descubiertas del servidor vía tools/list)
+# 2. CONFIGURACIÓN DEL GRAFO Y AGENTE
 # ==========================================
-mcp_client = MultiServerMCPClient({
-    "municipal": {"url": MUNICIPAL_SERVER_URL, "transport": "streamable_http"}
-})
 
-INSTRUCCIONES_AGENTE = (
-    "Eres el Agente Municipal de Atención Ciudadana. Habla SIEMPRE en español.\n"
-    "TIENES HERRAMIENTAS (TOOLS) DISPONIBLES. ESTÁS OBLIGADO a usarlas.\n"
-    "REGLA 1: Si el usuario quiere reportar algo roto (bache, farola, basura), EJECUTA 'registrar_incidencia'.\n"
-    "REGLA 2: Si el usuario quiere un certificado o trámite, EJECUTA 'iniciar_tramite' (si no da el DNI, envíalo como 'SIN_DNI' y pídeselo).\n"
-    "REGLA 3: Si el usuario pregunta horarios o información, EJECUTA 'consultar_informacion'.\n"
-    "REGLA 4 (CRÍTICA): Si el usuario te pide ver la lista de incidencias, sus registros o historial, TIENES QUE EJECUTAR OBLIGATORIAMENTE la herramienta 'ver_registros'. NUNCA digas que no tienes acceso.\n"
-    "REGLA 5: NO inventes excusas ni alucines información."
+# Leer configuración del modelo desde el .env (mismos nombres que boti-bank; LOCAL_LLM_* por compatibilidad)
+LLM_API_KEY = os.getenv("MODEL_API_KEY", os.getenv("LOCAL_LLM_API_KEY", "sk-mi-clave-secreta-123"))
+LLM_BASE_URL = os.getenv("MODEL_BASE_URL", os.getenv("LOCAL_LLM_BASE_URL", "https://macos.tailcc45b1.ts.net/v1"))
+LLM_MODEL_NAME = os.getenv("MODEL_NAME", os.getenv("LOCAL_LLM_MODEL", "hermes-2-pro-llama3-8b"))
+
+llm = ChatOpenAI(
+    base_url=LLM_BASE_URL,
+    api_key=LLM_API_KEY,
+    model=LLM_MODEL_NAME,
+    temperature=0.0
 )
 
-class ChatRequestSchema(BaseModel):
-    session_id: str
-    message: str
+system_prompt = SystemMessage(content="""
+Eres el Agente Municipal de Atención Ciudadana. Habla SIEMPRE en español.
+TIENES HERRAMIENTAS (TOOLS) DISPONIBLES. ESTÁS OBLIGADO a usarlas.
+REGLA 1: Si el usuario quiere reportar algo roto (bache, farola, basura), EJECUTA 'registrar_incidencia'.
+REGLA 2: Si el usuario quiere un certificado o trámite, EJECUTA 'iniciar_tramite' (si no da el DNI, envíalo como 'SIN_DNI' y pídeselo).
+REGLA 3: Si el usuario pregunta horarios o información, EJECUTA 'consultar_informacion'.
+REGLA 4 (CRÍTICA): Si el usuario te pide ver la lista de incidencias, sus registros o historial, TIENES QUE EJECUTAR OBLIGATORIAMENTE la herramienta 'ver_registros'. NUNCA digas que no tienes acceso.
+REGLA 5: NO inventes excusas ni alucines información.
+REGLA 6: CADA PEDIDO NUEVO NECESITA SU PROPIA HERRAMIENTA: haber usado una herramienta antes en la
+conversación no te da la respuesta a la pregunta siguiente.
+""")
+
+# Cuantos turnos de usuario viajan al modelo (mismo motivo que en boti-bank: con el
+# historial completo el modelo chico deja de llamar tools y repite el turno anterior).
+MAX_TURNOS = int(os.getenv("AGENT_MAX_TURNOS", "3"))
+
+
+def _recortar(messages):
+    """Deja los ultimos MAX_TURNOS turnos del usuario.
+
+    Corta siempre en un HumanMessage: cortar en cualquier otro sitio separaria
+    una tool_call de su ToolMessage y el request saldria invalido.
+    """
+    inicios = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if len(inicios) <= MAX_TURNOS:
+        return messages
+    return messages[inicios[-MAX_TURNOS]:]
+
+
+def _construir_agente(tools):
+    llm_with_tools = llm.bind_tools(tools)
+
+    async def agent_node(state: MessagesState):
+        messages = _recortar(state["messages"])
+        if not messages or not isinstance(messages[0], SystemMessage):
+            messages = [system_prompt] + messages
+        response = await llm_with_tools.ainvoke(messages)
+        return {"messages": [response]}
+
+    def should_continue(state: MessagesState):
+        last_message = state["messages"][-1]
+        if last_message.tool_calls:
+            return "tools"
+        return END
+
+    workflow = StateGraph(MessagesState)
+    workflow.add_node("agent", agent_node)
+    # Si el MCP server falla (timeout, 504...), el error vuelve al modelo como ToolMessage
+    # y el bot responde en vez de devolver un 500.
+    workflow.add_node("tools", ToolNode(tools, handle_tool_errors=True))
+
+    workflow.add_edge(START, "agent")
+    workflow.add_conditional_edges("agent", should_continue, ["tools", END])
+    workflow.add_edge("tools", "agent")
+
+    return workflow.compile(checkpointer=checkpointer)
+
+checkpointer = MemorySaver()
+_municipal_agent = None
+_lock_agente = asyncio.Lock()
+
+async def obtener_agente():
+    """Construye el grafo la primera vez que se usa: las tools se piden al MCP server
+    en ese momento, así el contenedor arranca aunque el MCP server todavía no responda."""
+    global _municipal_agent
+    async with _lock_agente:
+        if _municipal_agent is None:
+            tools = [_con_limite(t) for t in await asyncio.wait_for(
+                mcp_client.get_tools(), MUNICIPAL_SERVER_TIMEOUT)]
+            _municipal_agent = _construir_agente(tools)
+    return _municipal_agent
 
 # ==========================================
-# ENDPOINT PRINCIPAL
+# 3. FASTAPI ENDPOINTS
 # ==========================================
-@app.post("/chat")
-async def chat(payload: ChatRequestSchema):
+
+app = FastAPI(title="Sede Virtual Municipal", version="1.0.0")
+
+# NOTE: field names/requiredness here must match the OpenAPI schema
+# registered for this component's /chat endpoint in Agent Manager
+# (message + session_id required, context optional) — otherwise the
+# gateway's requests get rejected with 422 before they ever reach the graph.
+class ChatRequest(BaseModel):
+    message: str = Field(..., description="El mensaje o instrucción del usuario")
+    session_id: str = Field(..., description="ID de sesión para mantener el historial")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="Contexto opcional en formato JSON")
+
+class ChatResponse(BaseModel):
+    response: str
+
+def _respuesta_final(messages) -> str:
+    """Lo que se le devuelve al usuario: la ultima respuesta REDACTADA.
+
+    Coger messages[-1] a ciegas devuelve el ToolMessage tal cual cuando el grafo
+    termina justo despues de una herramienta. Aqui se busca hacia atras el ultimo
+    AIMessage con texto.
+    """
+    ultimo_tool = next((m.content for m in reversed(messages)
+                        if isinstance(m, ToolMessage) and isinstance(m.content, str)), None)
+
+    for m in reversed(messages):
+        if not isinstance(m, AIMessage):
+            continue
+        texto = m.content if isinstance(m.content, str) else ""
+        texto = texto.strip()
+        if not texto:
+            continue
+        if ultimo_tool and texto == ultimo_tool.strip():
+            return ("No pude redactar la respuesta: el modelo devolvio el resultado "
+                    "de la herramienta sin elaborar. Vuelve a preguntarlo, por favor.")
+        return texto
+
+    return "No obtuve una respuesta del modelo para este pedido."
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(req: ChatRequest):
+    run_config = {"configurable": {"thread_id": req.session_id}}
+
+    input_message = HumanMessage(content=req.message)
+
     try:
-        llm = ChatOpenAI(
-            base_url=os.getenv("LOCAL_LLM_BASE_URL"), 
-            api_key=os.getenv("LOCAL_LLM_API_KEY", "lm-studio"),
-            model=os.getenv("LOCAL_LLM_MODEL"),
-            temperature=0.0
+        municipal_agent = await obtener_agente()
+        final_state = await municipal_agent.ainvoke(
+            {"messages": [input_message]},
+            config=run_config
         )
-        
-        herramientas_api = await mcp_client.get_tools()
 
-        agente = create_react_agent(
-            llm,
-            tools=herramientas_api,
-            checkpointer=memory, 
-            prompt=INSTRUCCIONES_AGENTE # O state_modifier según versión de langgraph
-        )
-        
-        config = {"configurable": {"thread_id": payload.session_id}}
-        result = await agente.ainvoke({"messages": [("user", payload.message)]}, config)
-        
-        final_answer = result["messages"][-1].content
-        return JSONResponse(content={"response": final_answer})
-        
+        return ChatResponse(response=_respuesta_final(final_state["messages"]))
     except Exception as e:
-        print("\n❌ DETALLE DEL ERROR 500:")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Agent internal error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
 # FRONTEND UI
@@ -178,6 +308,6 @@ if __name__ == "__main__":
     import uvicorn
 
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", 5000))
+    port = int(os.getenv("API_PORT", 8000))
 
     uvicorn.run("main:app", host=host, port=port)
